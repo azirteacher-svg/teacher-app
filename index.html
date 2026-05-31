@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teacher Gradebook App</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Teacher Gradebook App</h1>
+    <p>Manage students, assignments, and grades easily</p>
+  </header>
+  <main>
+    <!-- Student Management -->
+    <section id="students-section">
+      <h2>Students</h2>
+      <!-- Form to add a new student with name and gender -->
+      <form id="student-form" class="form-inline">
+        <input type="text" id="student-name" placeholder="Student name" required>
+        <!-- Optional gender selector for analysing performance by gender -->
+        <select id="student-gender">
+          <option value="" selected>Gender (optional)</option>
+          <option value="Female">Female</option>
+          <option value="Male">Male</option>
+          <option value="Non-binary">Non‑binary</option>
+          <option value="Prefer not to say">Prefer not to say</option>
+        </select>
+        <!-- Optional section/class input for grouping students -->
+        <input type="text" id="student-section" placeholder="Section (optional)" />
+        <!-- Add Student button triggers global handler -->
+        <button id="add-student-btn" type="button">Add Student</button>
+      </form>
+      <ul id="students-list"></ul>
+    </section>
+
+    <!-- Bulk Student Upload -->
+    <section id="student-upload-section">
+      <h3>Import Students</h3>
+      <p>Select a CSV or Excel (.xlsx) file with student data. The first column must be the student name. Optional columns for gender and section can follow.</p>
+      <input type="file" id="student-upload-file" accept=".csv,.xlsx,.xls" />
+      <button type="button" id="import-students-btn" onclick="uiImportStudents()">Import Students</button>
+    </section>
+
+    <!-- Assignment and Test Management -->
+    <section id="assignments-section">
+      <h2>Assignments &amp; Tests</h2>
+      <!-- Form to create a new assignment/test with subject and questions -->
+      <form id="assignment-form" class="form-block">
+        <div class="form-group">
+          <input type="text" id="assignment-title" placeholder="Title" required>
+        </div>
+        <div class="form-group">
+          <input type="text" id="assignment-subject" placeholder="Subject" required>
+        </div>
+        <div id="questions-container">
+          <!-- Question rows will be appended here via JavaScript -->
+        </div>
+        <div class="button-group">
+          <button type="button" id="add-question-btn">Add Question</button>
+          <button type="submit">Add Assignment</button>
+        </div>
+      </form>
+      <ul id="assignments-list"></ul>
+    </section>
+
+    <!-- Bulk Question Upload -->
+    <section id="question-upload-section">
+      <h3>Import Questions</h3>
+      <p>Select a CSV or Excel (.xlsx) file with question data. Each row should include question text, max points, and topic. Imported questions will be added to the current assignment form.</p>
+      <input type="file" id="question-upload-file" accept=".csv,.xlsx,.xls" />
+      <button type="button" id="import-questions-btn" onclick="uiImportQuestions()">Import Questions</button>
+    </section>
+
+    <!-- Grades Table -->
+    <section id="grades-section">
+      <h2>Grades</h2>
+      <div id="grades-table-container">
+        <!-- Table will be generated here -->
+      </div>
+    </section>
+
+    <!-- Summary -->
+    <section id="summary-section">
+      <h2>Summary</h2>
+      <div id="summary-container">
+        <!-- Summary will be generated here -->
+      </div>
+    </section>
+
+    <!-- Analysis -->
+    <section id="analysis-section">
+      <h2>Performance Analysis</h2>
+      <div id="analysis-container">
+        <!-- Analysis will be generated here -->
+      </div>
+    </section>
+
+    <!-- Topic Performance Analysis -->
+    <section id="topic-analysis-section">
+      <h2>Topic Performance</h2>
+      <div id="topic-analysis-container">
+        <!-- Topic analysis will be generated here -->
+      </div>
+    </section>
+
+    <!-- Charts and Visual Analytics -->
+    <section id="charts-section">
+      <h2>Visual Analytics</h2>
+      <div class="chart-wrapper">
+        <canvas id="assignment-chart" width="400" height="200"></canvas>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="topic-chart" width="400" height="200"></canvas>
+      </div>
+      <div id="student-topic-charts">
+        <!-- Individual student topic charts will appear here -->
+      </div>
+    </section>
+
+    <!-- AI Conclusion -->
+    <section id="ai-section">
+      <h2>AI‑Generated Summary</h2>
+      <button id="generate-conclusion-btn">Generate Conclusion</button>
+      <div id="ai-conclusion-container">
+        <!-- AI conclusion text will be inserted here -->
+      </div>
+    </section>
+
+    <!-- Gender Analysis -->
+    <section id="gender-analysis-section">
+      <h2>Gender Analysis</h2>
+      <div id="gender-analysis-container">
+        <!-- Gender analysis table will be generated here -->
+      </div>
+    </section>
+
+    <!-- Gender Chart -->
+    <section id="gender-charts-section">
+      <h2>Gender Visual Analytics</h2>
+      <div class="chart-wrapper">
+        <canvas id="gender-chart" width="400" height="200"></canvas>
+      </div>
+    </section>
+
+    <!-- Section Analysis -->
+    <section id="section-analysis-section">
+      <h2>Section Analysis</h2>
+      <div id="section-analysis-container">
+        <!-- Section analysis table will be generated here -->
+      </div>
+    </section>
+  </main>
+  <footer>
+    <p>&copy; <span id="year"></span> Teacher Gradebook App</p>
+  </footer>
+  <!-- Chart.js library for generating graphs -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Library for parsing Excel files in the browser. If this script fails to load due to network restrictions, CSV import will still work. -->
+  <script src="https://unpkg.com/read-excel-file@5.1.0/bundle/read-excel-file.min.js"></script>
+  <!-- Append a version query string to the script to force browsers to reload the latest version.
+       Without this, some browsers may cache script.js when opened via file:// and ignore updates. -->
+  <!-- Update version query string whenever script changes to force reload -->
+  <!-- Update version query string whenever script changes to force reload -->
+  <script src="script.js?v=4"></script>
+</body>
+</html>
