@@ -1,1422 +1,184 @@
-/*
- * Teacher Gradebook App
- *
- * This script manages students, assignments, and grades using the browser's
- * localStorage. It dynamically renders lists, a grades table, and a summary
- * of average scores. Teachers can add and remove students and assignments,
- * enter grades for each student/assignment combination, and view computed
- * averages to gain insights into class performance.
- */
+(() => {
+  const STORAGE_KEY = 'teacher-grade-analysis-v2';
+  const GRADE_ORDER = ['F','E','D','C','B','A'];
+  const GRADE_VALUE = {F:0,E:1,D:2,C:3,B:4,A:5};
+  const state = loadState();
+  let activeTestId = state.settings.activeTestId || null;
 
-(function () {
-  // In-memory state of the app. Will be loaded from localStorage on startup.
-  // students: array of { id, name, gender, section }
-  let students = [];
-  // assignments: array of { id, title, subject, date, questions: [{ id, text, maxPoints, topic }] }
-  let assignments = [];
-  // grades: nested object: grades[studentId][assignmentId][questionId] = value (number|null)
-  let grades = {};
+  function emptyState(){ return {students:[], ntTests:[], assessments:[], settings:{activeTestId:null}}; }
+  function loadState(){ try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || emptyState(); } catch(e){ return emptyState(); } }
+  function saveState(){ try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){ alert('The browser could not save data. Please use Export Backup often.'); } }
+  function id(prefix){ return prefix + '-' + Date.now() + '-' + Math.floor(Math.random()*100000); }
+  function norm(v){ return (v ?? '').toString().trim(); }
+  function toNumber(v){ const n = parseFloat((v ?? '').toString().replace(',', '.')); return Number.isFinite(n) ? n : null; }
+  function cleanGrade(v){ const g = norm(v).toUpperCase(); return GRADE_VALUE.hasOwnProperty(g) ? g : (g || ''); }
+  function cleanGender(v){
+    const g = norm(v).toLowerCase();
+    if(!g) return '';
+    if(['g','girl','girls','female','flicka','flickor','kvinna'].includes(g)) return 'Female';
+    if(['b','boy','boys','male','pojke','pojkar','man'].includes(g)) return 'Male';
+    return norm(v);
+  }
+  function gradeDiff(a,b){ a=cleanGrade(a); b=cleanGrade(b); if(!GRADE_VALUE.hasOwnProperty(a)||!GRADE_VALUE.hasOwnProperty(b)) return null; return GRADE_VALUE[b]-GRADE_VALUE[a]; }
+  function diffText(d){ if(d===null) return '-'; if(d===0) return 'Same'; return d>0 ? `Up +${d}` : `Down ${d}`; }
+  function escapeHtml(s){ return norm(s).replace(/[&<>'"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+  function csvEscape(v){ const s = (v ?? '').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
+  function downloadFile(name, text, type='text/plain'){ const blob = new Blob([text], {type}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
 
-  // Utility: Save current state to localStorage
-  function saveData() {
-    // Write to localStorage with error handling. Some environments (such as
-    // file:// origins or private browsing) may disallow storage writes, which
-    // would otherwise throw and prevent the UI from updating. Catch errors and
-    // fail silently so the rest of the app continues to work.
-    try {
-      localStorage.setItem('tg_students', JSON.stringify(students));
-      localStorage.setItem('tg_assignments', JSON.stringify(assignments));
-      localStorage.setItem('tg_grades', JSON.stringify(grades));
-    } catch (err) {
-      // If saving fails, log to console for debugging but do not stop execution.
-      try {
-        console.warn('Unable to save data to localStorage:', err);
-      } catch (_) {
-        /* no-op */
-      }
+  function parseCsv(text){
+    const rows=[]; let row=[], cur='', q=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i], next=text[i+1];
+      if(q){ if(ch==='"' && next==='"'){cur+='"'; i++;} else if(ch==='"'){q=false;} else cur+=ch; }
+      else { if(ch==='"') q=true; else if(ch===','){row.push(cur); cur='';} else if(ch==='\n'){row.push(cur); rows.push(row); row=[]; cur='';} else if(ch==='\r'){} else cur+=ch; }
     }
+    if(cur || row.length) { row.push(cur); rows.push(row); }
+    return rows.map(r=>r.map(c=>norm(c)));
+  }
+  async function readRows(file){
+    const name=file.name.toLowerCase();
+    if((name.endsWith('.xlsx') || name.endsWith('.xls')) && typeof readXlsxFile === 'function') return await readXlsxFile(file);
+    if(name.endsWith('.xlsx') || name.endsWith('.xls')) throw new Error('Excel reader could not load. Please save the file as CSV and upload again.');
+    return parseCsv(await file.text());
   }
 
-  // Utility: Load state from localStorage
-  function loadData() {
-    try {
-      students = JSON.parse(localStorage.getItem('tg_students')) || [];
-    } catch (e) {
-      students = [];
+  function upsertStudent(name, gender='', section=''){
+    name=norm(name); if(!name) return;
+    const key=name.toLowerCase();
+    const cleanedGender = cleanGender(gender);
+    let s=state.students.find(x=>x.name.toLowerCase()===key);
+    if(!s){ s={id:id('stu'), name, gender:cleanedGender, section:norm(section)}; state.students.push(s); }
+    else { if(cleanedGender && !s.gender) s.gender=cleanedGender; if(section && !s.section) s.section=norm(section); }
+  }
+  function getStudent(name){ return state.students.find(s=>s.name.toLowerCase()===norm(name).toLowerCase()); }
+  function selectedTest(){ return state.ntTests.find(t=>t.id===activeTestId) || state.ntTests[0] || null; }
+  function getFilteredRows(test){
+    if(!test) return [];
+    const sec=document.getElementById('sectionFilter')?.value || 'all';
+    const gen=document.getElementById('genderFilter')?.value || 'all';
+    return test.students.filter(r=>{
+      const stu=getStudent(r.name) || {};
+      if(sec!=='all' && (stu.section || test.className || '') !== sec) return false;
+      if(gen!=='all' && (stu.gender || 'Unspecified') !== gen) return false;
+      return true;
+    });
+  }
+
+  function parseNationalTestRows(rows){
+    if(rows.length < 3) throw new Error('The file must contain at least max point row, header row, and student rows.');
+    const maxRow = rows[0];
+    const headerRow = rows[1];
+    const nameIndex = headerRow.findIndex(c => norm(c).toLowerCase()==='name');
+    if(nameIndex === -1) throw new Error('Could not find the Name column in row 2.');
+    const lowHeaders = headerRow.map(c=>norm(c).toLowerCase());
+    const genderIndex = lowHeaders.findIndex((h,i)=>i>nameIndex && ['gender','sex','kön','kon'].includes(h));
+    const firstSummary = lowHeaders.findIndex((h,i)=>i>nameIndex && ['total','total ','nt grade','teacher grade','final grade','deviations','reason'].some(x=>h===x || h.includes(x.trim())));
+    const questionEnd = firstSummary === -1 ? headerRow.length : firstSummary;
+    const questions=[];
+    for(let c=nameIndex+1; c<questionEnd; c++){
+      const label = norm(headerRow[c]);
+      if(!label) continue;
+      const max = toNumber(maxRow[c]);
+      if(max===null) continue;
+      questions.push({col:c, label, max, topic:'General'});
     }
-    try {
-      assignments = JSON.parse(localStorage.getItem('tg_assignments')) || [];
-    } catch (e) {
-      assignments = [];
-    }
-    try {
-      grades = JSON.parse(localStorage.getItem('tg_grades')) || {};
-    } catch (e) {
-      grades = {};
-    }
-  }
-
-  // Utility: Generate a unique ID (string) based on timestamp and random
-  function generateId(prefix = 'id') {
-    return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-  }
-
-  // Student operations
-  function addStudent(name, gender, section) {
-    const id = generateId('stu');
-    // Normalize gender: if empty string or undefined, store as null
-    const g = gender && gender.trim() !== '' ? gender.trim() : null;
-    // Normalize section: if empty string or undefined, store as null
-    const s = section && section.trim() !== '' ? section.trim() : null;
-    students.push({ id, name, gender: g, section: s });
-    // Ensure a grades entry exists for the new student
-    grades[id] = grades[id] || {};
-    // Initialise grade structure for existing assignments
-    assignments.forEach((assignment) => {
-      grades[id][assignment.id] = grades[id][assignment.id] || {};
-      assignment.questions.forEach((q) => {
-        grades[id][assignment.id][q.id] = grades[id][assignment.id][q.id] || null;
-      });
-    });
-    saveData();
-    renderAll();
-  }
-
-  function deleteStudent(studentId) {
-    students = students.filter((s) => s.id !== studentId);
-    delete grades[studentId];
-    saveData();
-    renderAll();
-  }
-
-  // Assignment and test operations
-  /**
-   * Add a new assignment/test with subject and questions.
-   * Each question should have an id, text, maxPoints, and topic.
-   */
-  function addAssignment(title, subject, questions) {
-    const id = generateId('ass');
-    const date = new Date().toISOString();
-    assignments.push({ id, title, subject, date, questions });
-    // Initialise grades for this assignment's questions for existing students
-    students.forEach((s) => {
-      if (!grades[s.id]) grades[s.id] = {};
-      grades[s.id][id] = grades[s.id][id] || {};
-      questions.forEach((q) => {
-        grades[s.id][id][q.id] = grades[s.id][id][q.id] || null;
-      });
-    });
-    saveData();
-    renderAll();
-  }
-
-  function deleteAssignment(assignmentId) {
-    assignments = assignments.filter((a) => a.id !== assignmentId);
-    // Remove associated grades for this assignment across all students
-    Object.keys(grades).forEach((studentId) => {
-      if (grades[studentId]) {
-        delete grades[studentId][assignmentId];
-      }
-    });
-    saveData();
-    renderAll();
-  }
-
-  // Update grade for a specific student, assignment, and question
-  function updateGrade(studentId, assignmentId, questionId, value) {
-    if (!grades[studentId]) grades[studentId] = {};
-    if (!grades[studentId][assignmentId]) grades[studentId][assignmentId] = {};
-    const numeric = value === '' ? null : parseFloat(value);
-    grades[studentId][assignmentId][questionId] = isNaN(numeric) ? null : numeric;
-    saveData();
-    // Update displays
-    renderGradesTable();
-    renderSummary();
-    renderAnalysis();
-    renderTopicAnalysis();
-    renderCharts();
-  }
-
-  // Compute average percentage for a student across all assignments and questions
-  function computeStudentAverage(studentId) {
-    let totalPoints = 0;
-    let totalMax = 0;
-    assignments.forEach((assignment) => {
-      assignment.questions.forEach((q) => {
-        const val = grades[studentId] && grades[studentId][assignment.id] && grades[studentId][assignment.id][q.id];
-        if (typeof val === 'number') {
-          totalPoints += val;
-          totalMax += Number(q.maxPoints);
-        }
-      });
-    });
-    if (totalMax === 0) return null;
-    return (totalPoints / totalMax) * 100;
-  }
-
-  // Compute the overall class average (percentage) across all students and questions
-  function computeClassAverage() {
-    let totalPoints = 0;
-    let totalMax = 0;
-    assignments.forEach((assignment) => {
-      assignment.questions.forEach((q) => {
-        const max = Number(q.maxPoints);
-        students.forEach((student) => {
-          const val = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof val === 'number' && max > 0) {
-            totalPoints += val;
-            totalMax += max;
-          }
-        });
-      });
-    });
-    if (totalMax === 0) return null;
-    return (totalPoints / totalMax) * 100;
-  }
-
-  // Compute performance improvement percentage for a student between early and later assignments
-  function computeStudentImprovement(studentId) {
-    if (assignments.length < 2) return null;
-    // Sort assignments by date ascending
-    const sorted = assignments.slice().sort((a, b) => {
-      const da = a.date ? new Date(a.date).getTime() : 0;
-      const db = b.date ? new Date(b.date).getTime() : 0;
-      return da - db;
-    });
-    const mid = Math.floor(sorted.length / 2);
-    let earlyPoints = 0;
-    let earlyMax = 0;
-    for (let i = 0; i < mid; i++) {
-      const ass = sorted[i];
-      ass.questions.forEach((q) => {
-        const val = grades[studentId] && grades[studentId][ass.id] && grades[studentId][ass.id][q.id];
-        if (typeof val === 'number') {
-          earlyPoints += val;
-          earlyMax += Number(q.maxPoints);
-        }
-      });
-    }
-    let laterPoints = 0;
-    let laterMax = 0;
-    for (let i = mid; i < sorted.length; i++) {
-      const ass = sorted[i];
-      ass.questions.forEach((q) => {
-        const val = grades[studentId] && grades[studentId][ass.id] && grades[studentId][ass.id][q.id];
-        if (typeof val === 'number') {
-          laterPoints += val;
-          laterMax += Number(q.maxPoints);
-        }
-      });
-    }
-    if (earlyMax === 0 || laterMax === 0) return null;
-    const earlyAvg = earlyPoints / earlyMax;
-    const laterAvg = laterPoints / laterMax;
-    return (laterAvg - earlyAvg) * 100;
-  }
-
-  // Compute topic-level performance for a student
-  function computeTopicPerformance(studentId) {
-    const performance = {};
-    assignments.forEach((assignment) => {
-      assignment.questions.forEach((q) => {
-        const val = grades[studentId] && grades[studentId][assignment.id] && grades[studentId][assignment.id][q.id];
-        if (typeof val === 'number') {
-          if (!performance[q.topic]) performance[q.topic] = { points: 0, max: 0 };
-          performance[q.topic].points += val;
-          performance[q.topic].max += Number(q.maxPoints);
-        }
-      });
-    });
-    return performance;
-  }
-
-  // Compute topic-level performance across the whole class
-  function computeClassTopicPerformance() {
-    const perf = {};
-    students.forEach((student) => {
-      assignments.forEach((assignment) => {
-        assignment.questions.forEach((q) => {
-          const val = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof val === 'number') {
-            if (!perf[q.topic]) perf[q.topic] = { points: 0, max: 0 };
-            perf[q.topic].points += val;
-            perf[q.topic].max += Number(q.maxPoints);
-          }
-        });
-      });
-    });
-    return perf;
-  }
-
-  // Compute average performance by gender. Returns an object where keys are gender labels
-  // (e.g., 'Male', 'Female', 'Non‑binary', 'Prefer not to say', or 'Unspecified')
-  // and values are objects { points, max } summarizing the total points earned and
-  // total maximum points for students of that gender across all assignments.
-  function computeGenderAverages() {
-    const perf = {};
-    students.forEach((student) => {
-      const g = student.gender || 'Unspecified';
-      if (!perf[g]) perf[g] = { points: 0, max: 0, count: 0 };
-      perf[g].count += 1;
-      assignments.forEach((assignment) => {
-        assignment.questions.forEach((q) => {
-          const val = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof val === 'number') {
-            perf[g].points += val;
-            perf[g].max += Number(q.maxPoints);
-          }
-        });
-      });
-    });
-    return perf;
-  }
-
-  /**
-   * Compute average performance by section (or class). Each student may belong to a
-   * section (provided via the optional "Section" input). This function
-   * accumulates total points and maximum points for all students within each
-   * section across every assignment and question. It also tracks how many
-   * students are in each section. Students without a specified section are
-   * grouped under the label "Unspecified".
-   */
-  function computeSectionAverages() {
-    const perf = {};
-    students.forEach((student) => {
-      const sect = student.section || 'Unspecified';
-      if (!perf[sect]) perf[sect] = { points: 0, max: 0, count: 0 };
-      perf[sect].count += 1;
-      assignments.forEach((assignment) => {
-        assignment.questions.forEach((q) => {
-          const val = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof val === 'number') {
-            perf[sect].points += val;
-            perf[sect].max += Number(q.maxPoints);
-          }
-        });
-      });
-    });
-    return perf;
-  }
-
-  // Determine the weakest topic for a student (lowest percentage)
-  function getWeakestTopic(studentId) {
-    const perf = computeTopicPerformance(studentId);
-    let minTopic = null;
-    let minRate = Infinity;
-    Object.keys(perf).forEach((topic) => {
-      const data = perf[topic];
-      if (data.max > 0) {
-        const rate = data.points / data.max;
-        if (rate < minRate) {
-          minRate = rate;
-          minTopic = topic;
-        }
-      }
-    });
-    return minTopic;
-  }
-
-  // Generate a support message for a student based on performance metrics and topic performance
-  function getSupportMessage(studentId) {
-    const avg = computeStudentAverage(studentId);
-    const classAvg = computeClassAverage();
-    const improvement = computeStudentImprovement(studentId);
-    if (avg === null) {
-      return 'No grades recorded yet.';
-    }
-    let parts = [];
-    if (classAvg !== null) {
-      const diff = avg - classAvg;
-      if (diff < -1e-6) {
-        parts.push('Below class average.');
-      } else if (diff > 1e-6) {
-        parts.push('Above class average.');
-      } else {
-        parts.push('At class average.');
-      }
-    }
-    if (improvement !== null) {
-      if (improvement < -5) {
-        parts.push('Performance is declining. Consider additional support.');
-      } else if (improvement > 5) {
-        parts.push('Performance is improving. Encourage continued effort.');
-      } else {
-        parts.push('Performance is stable.');
-      }
-    } else {
-      parts.push('Not enough data to assess improvement.');
-    }
-    // Identify weakest topic and include advice
-    const weakTopic = getWeakestTopic(studentId);
-    if (weakTopic) {
-      parts.push(`Weakest topic: ${weakTopic}. Provide targeted practice.`);
-    }
-    return parts.join(' ');
-  }
-
-  // Render performance analysis for each student
-  function renderAnalysis() {
-    const container = document.getElementById('analysis-container');
-    container.innerHTML = '';
-    if (students.length === 0 || assignments.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'Add students and assignments to see analysis.';
-      container.appendChild(p);
-      return;
-    }
-    // Build a table: Student, Average (%), Difference from class, Improvement (%), Recommendation
-    const table = document.createElement('table');
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    ['Student', 'Average (%)', 'Difference from class', 'Improvement (%)', 'Recommendation'].forEach((heading) => {
-      const th = document.createElement('th');
-      th.textContent = heading;
-      headerRow.appendChild(th);
-    });
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    const classAvg = computeClassAverage();
-    students.forEach((student) => {
-      const tr = document.createElement('tr');
-      const avg = computeStudentAverage(student.id);
-      const improvement = computeStudentImprovement(student.id);
-      // Student name
-      let td = document.createElement('td');
-      td.textContent = student.name;
-      tr.appendChild(td);
-      // Average
-      td = document.createElement('td');
-      td.textContent = avg === null ? '-' : avg.toFixed(2);
-      tr.appendChild(td);
-      // Difference from class average
-      td = document.createElement('td');
-      if (avg === null || classAvg === null) {
-        td.textContent = '-';
-      } else {
-        const diff = avg - classAvg;
-        td.textContent = (diff >= 0 ? '+' : '') + diff.toFixed(2);
-      }
-      tr.appendChild(td);
-      // Improvement
-      td = document.createElement('td');
-      if (improvement === null) {
-        td.textContent = '-';
-      } else {
-        td.textContent = (improvement >= 0 ? '+' : '') + improvement.toFixed(2);
-      }
-      tr.appendChild(td);
-      // Recommendation
-      td = document.createElement('td');
-      td.textContent = getSupportMessage(student.id);
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    container.appendChild(table);
-  }
-
-  // Render topic-level analysis for each student and class
-  function renderTopicAnalysis() {
-    const container = document.getElementById('topic-analysis-container');
-    container.innerHTML = '';
-    if (students.length === 0 || assignments.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'Add students and assignments to see topic analysis.';
-      container.appendChild(p);
-      return;
-    }
-    // Gather all unique topics
-    const allTopics = new Set();
-    assignments.forEach((assignment) => {
-      assignment.questions.forEach((q) => allTopics.add(q.topic));
-    });
-    const topics = Array.from(allTopics);
-    if (topics.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'No topics defined yet.';
-      container.appendChild(p);
-      return;
-    }
-    // Compute class topic performance
-    const classPerf = computeClassTopicPerformance();
-    // Table header: Student, for each topic show Student %, Class %, Diff
-    const table = document.createElement('table');
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    const th0 = document.createElement('th');
-    th0.textContent = 'Student';
-    headerRow.appendChild(th0);
-    topics.forEach((topic) => {
-      const th = document.createElement('th');
-      th.innerHTML = `${topic}<br>(Student / Class / Δ)`;
-      headerRow.appendChild(th);
-    });
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    students.forEach((student) => {
-      const tr = document.createElement('tr');
-      let td = document.createElement('td');
-      td.textContent = student.name;
-      tr.appendChild(td);
-      const studentPerf = computeTopicPerformance(student.id);
-      topics.forEach((topic) => {
-        td = document.createElement('td');
-        const sp = studentPerf[topic] || { points: 0, max: 0 };
-        const cp = classPerf[topic] || { points: 0, max: 0 };
-        let sPct = '-';
-        let cPct = '-';
-        let diff = '-';
-        if (sp.max > 0) {
-          sPct = ((sp.points / sp.max) * 100).toFixed(1);
-        }
-        if (cp.max > 0) {
-          cPct = ((cp.points / cp.max) * 100).toFixed(1);
-        }
-        if (sp.max > 0 && cp.max > 0) {
-          const sd = (sp.points / sp.max) * 100;
-          const cd = (cp.points / cp.max) * 100;
-          diff = ((sd - cd) >= 0 ? '+' : '') + (sd - cd).toFixed(1);
-        }
-        td.textContent = `${sPct === '-' ? '-' : sPct + '%'} / ${cPct === '-' ? '-' : cPct + '%'} / ${diff}`;
-        tr.appendChild(td);
-      });
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    container.appendChild(table);
-  }
-
-  // Render gender-based analysis summarizing average performance by gender
-  function renderGenderAnalysis() {
-    const container = document.getElementById('gender-analysis-container');
-    if (!container) return;
-    container.innerHTML = '';
-    if (students.length === 0 || assignments.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'Add students and assignments to see gender analysis.';
-      container.appendChild(p);
-      return;
-    }
-    const perf = computeGenderAverages();
-    const classAvg = computeClassAverage();
-    // Build a table: Gender, Students, Average (%), Difference from class
-    const table = document.createElement('table');
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    ['Gender', 'Students', 'Average (%)', 'Difference vs class'].forEach((h) => {
-      const th = document.createElement('th');
-      th.textContent = h;
-      headerRow.appendChild(th);
-    });
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    Object.keys(perf).forEach((gender) => {
-      const data = perf[gender];
-      const tr = document.createElement('tr');
-      let td = document.createElement('td');
-      td.textContent = gender;
-      tr.appendChild(td);
-      // number of students
-      td = document.createElement('td');
-      td.textContent = data.count;
-      tr.appendChild(td);
-      // average percentage
-      td = document.createElement('td');
-      if (data.max > 0) {
-        const pct = (data.points / data.max) * 100;
-        td.textContent = pct.toFixed(2);
-      } else {
-        td.textContent = '-';
-      }
-      tr.appendChild(td);
-      // difference from class average
-      td = document.createElement('td');
-      if (data.max > 0 && classAvg !== null) {
-        const pct = (data.points / data.max) * 100;
-        const diff = pct - classAvg;
-        td.textContent = (diff >= 0 ? '+' : '') + diff.toFixed(2);
-      } else {
-        td.textContent = '-';
-      }
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    container.appendChild(table);
-  }
-
-  /**
-   * Render section-based analysis summarizing average performance by section.
-   * Displays a table showing each section, the number of students in the section,
-   * the average percentage score across all assignments and questions, and the
-   * difference relative to the overall class average. This helps teachers
-   * identify which class sections may need additional support.
-   */
-  function renderSectionAnalysis() {
-    const container = document.getElementById('section-analysis-container');
-    if (!container) return;
-    container.innerHTML = '';
-    // Only render analysis if there are students and assignments
-    if (students.length === 0 || assignments.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'Add students and assignments to see section analysis.';
-      container.appendChild(p);
-      return;
-    }
-    const perf = computeSectionAverages();
-    const classAvg = computeClassAverage();
-    // Build table header
-    const table = document.createElement('table');
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    ['Section', 'Students', 'Average (%)', 'Difference vs class'].forEach((h) => {
-      const th = document.createElement('th');
-      th.textContent = h;
-      headerRow.appendChild(th);
-    });
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    Object.keys(perf).forEach((sect) => {
-      const data = perf[sect];
-      const tr = document.createElement('tr');
-      let td = document.createElement('td');
-      td.textContent = sect;
-      tr.appendChild(td);
-      td = document.createElement('td');
-      td.textContent = data.count;
-      tr.appendChild(td);
-      td = document.createElement('td');
-      if (data.max > 0) {
-        const pct = (data.points / data.max) * 100;
-        td.textContent = pct.toFixed(2);
-      } else {
-        td.textContent = '-';
-      }
-      tr.appendChild(td);
-      td = document.createElement('td');
-      if (data.max > 0 && classAvg !== null) {
-        const pct = (data.points / data.max) * 100;
-        const diff = pct - classAvg;
-        td.textContent = (diff >= 0 ? '+' : '') + diff.toFixed(2);
-      } else {
-        td.textContent = '-';
-      }
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    container.appendChild(table);
-  }
-
-  // Render functions
-  function renderStudentsList() {
-    const list = document.getElementById('students-list');
-    list.innerHTML = '';
-    students.forEach((student) => {
-      const li = document.createElement('li');
-      const span = document.createElement('span');
-      // Display name with optional gender and section information
-      const nameParts = [];
-      nameParts.push(student.name);
-      if (student.gender) {
-        nameParts.push(`Gender: ${student.gender}`);
-      }
-      if (student.section) {
-        nameParts.push(`Section: ${student.section}`);
-      }
-      span.textContent = nameParts.join(' | ');
-      li.appendChild(span);
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.className = 'delete-btn';
-      delBtn.addEventListener('click', () => {
-        if (confirm(`Delete student "${student.name}"?`)) {
-          deleteStudent(student.id);
-        }
-      });
-      li.appendChild(delBtn);
-      list.appendChild(li);
-    });
-  }
-
-  function renderAssignmentsList() {
-    const list = document.getElementById('assignments-list');
-    list.innerHTML = '';
-    assignments.forEach((assignment) => {
-      const li = document.createElement('li');
-      const info = document.createElement('span');
-      const numQ = assignment.questions.length;
-      info.textContent = `${assignment.title} [${assignment.subject}] – ${numQ} question${numQ !== 1 ? 's' : ''}`;
-      li.appendChild(info);
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.className = 'delete-btn';
-      delBtn.addEventListener('click', () => {
-        if (confirm(`Delete assignment "${assignment.title}"?`)) {
-          deleteAssignment(assignment.id);
-        }
-      });
-      li.appendChild(delBtn);
-      list.appendChild(li);
-    });
-  }
-
-  function renderGradesTable() {
-    const container = document.getElementById('grades-table-container');
-    container.innerHTML = '';
-    if (students.length === 0 || assignments.length === 0) {
-      const message = document.createElement('p');
-      message.textContent = 'Add students and assignments to enter grades.';
-      container.appendChild(message);
-      return;
-    }
-    const table = document.createElement('table');
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    // First header cell for student names
-    const blankTh = document.createElement('th');
-    blankTh.textContent = 'Student';
-    headerRow.appendChild(blankTh);
-    // Header cells for each question of each assignment
-    assignments.forEach((assignment) => {
-      assignment.questions.forEach((q, idx) => {
-        const th = document.createElement('th');
-        // Display assignment title and question number with topic
-        th.innerHTML = `${assignment.title}<br>Q${idx + 1} (${q.topic})`;
-        headerRow.appendChild(th);
-      });
-    });
-    // Average column
-    const avgTh = document.createElement('th');
-    avgTh.textContent = 'Average (%)';
-    headerRow.appendChild(avgTh);
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    students.forEach((student) => {
-      const tr = document.createElement('tr');
-      // Student name
-      const nameTd = document.createElement('td');
-      nameTd.textContent = student.name;
-      tr.appendChild(nameTd);
-      // Inputs for each question
-      assignments.forEach((assignment) => {
-        assignment.questions.forEach((q) => {
-          const td = document.createElement('td');
-          const input = document.createElement('input');
-          input.type = 'number';
-          input.className = 'grade-input';
-          input.min = '0';
-          input.max = q.maxPoints;
-          // Pre-fill existing value
-          const currentVal = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof currentVal === 'number') {
-            input.value = currentVal;
-          }
-          input.addEventListener('change', (e) => {
-            const val = e.target.value;
-            if (val === '') {
-              updateGrade(student.id, assignment.id, q.id, null);
-            } else {
-              const num = parseFloat(val);
-              if (isNaN(num) || num < 0) {
-                e.target.value = '';
-                updateGrade(student.id, assignment.id, q.id, null);
-              } else if (num > q.maxPoints) {
-                alert(`Grade cannot exceed maximum points (${q.maxPoints}).`);
-                e.target.value = q.maxPoints;
-                updateGrade(student.id, assignment.id, q.id, q.maxPoints);
-              } else {
-                updateGrade(student.id, assignment.id, q.id, num);
-              }
-            }
-          });
-          td.appendChild(input);
-          tr.appendChild(td);
-        });
-      });
-      // Average column
-      const avgTd = document.createElement('td');
-      const avgVal = computeStudentAverage(student.id);
-      avgTd.textContent = avgVal === null ? '-' : avgVal.toFixed(2);
-      tr.appendChild(avgTd);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    container.appendChild(table);
-  }
-
-  function renderSummary() {
-    const container = document.getElementById('summary-container');
-    container.innerHTML = '';
-    if (students.length === 0 || assignments.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'Add students and assignments to see summary.';
-      container.appendChild(p);
-      return;
-    }
-    // Compute averages
-    const data = students.map((student) => {
-      return {
-        name: student.name,
-        average: computeStudentAverage(student.id),
-      };
-    });
-    // Filter out students without any grades
-    const filtered = data.filter((d) => d.average !== null);
-    if (filtered.length === 0) {
-      const p = document.createElement('p');
-      p.textContent = 'No grades entered yet.';
-      container.appendChild(p);
-      return;
-    }
-    // Sort by average descending
-    filtered.sort((a, b) => b.average - a.average);
-    const list = document.createElement('ol');
-    filtered.forEach((item) => {
-      const li = document.createElement('li');
-      li.textContent = `${item.name} – ${item.average.toFixed(2)}%`;
-      list.appendChild(li);
-    });
-    container.appendChild(list);
-  }
-
-  // Chart.js chart objects to persist and update
-  let assignmentChart = null;
-  let topicChart = null;
-  let genderChart = null;
-
-  // Render bar and topic charts
-  function renderCharts() {
-    // If Chart.js is not available (e.g., due to network issues loading the CDN),
-    // skip rendering charts to avoid breaking other features. This ensures that
-    // students and assignments can still be managed even if charts cannot be drawn.
-    if (typeof Chart === 'undefined') {
-      return;
-    }
-    // Render assignment-level chart (class average per assignment)
-    const ctxAssign = document.getElementById('assignment-chart').getContext('2d');
-    // Compute class average per assignment
-    const assignLabels = [];
-    const assignValues = [];
-    assignments.forEach((assignment) => {
-      let points = 0;
-      let maxPoints = 0;
-      assignment.questions.forEach((q) => {
-        const qMax = Number(q.maxPoints);
-        students.forEach((student) => {
-          const val = grades[student.id] && grades[student.id][assignment.id] && grades[student.id][assignment.id][q.id];
-          if (typeof val === 'number') {
-            points += val;
-            maxPoints += qMax;
-          }
-        });
-      });
-      if (maxPoints > 0) {
-        assignLabels.push(assignment.title);
-        assignValues.push((points / maxPoints) * 100);
-      } else {
-        assignLabels.push(assignment.title);
-        assignValues.push(0);
-      }
-    });
-    // Destroy existing chart if it exists
-    if (assignmentChart) assignmentChart.destroy();
-    assignmentChart = new Chart(ctxAssign, {
-      type: 'bar',
-      data: {
-        labels: assignLabels,
-        datasets: [
-          {
-            label: 'Class Average (%)',
-            data: assignValues,
-            backgroundColor: 'rgba(75, 192, 192, 0.5)',
-            borderColor: 'rgba(75, 192, 192, 1)',
-            borderWidth: 1
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: {
-            display: true
-          },
-          title: {
-            display: true,
-            text: 'Class Average by Assignment'
-          }
-        },
-        scales: {
-          y: {
-            beginAtZero: true,
-            max: 100
-          }
-        }
-      }
-    });
-    // Render topic-level chart (class average per topic)
-    const ctxTopic = document.getElementById('topic-chart').getContext('2d');
-    const classPerf = computeClassTopicPerformance();
-    const topicLabels = [];
-    const topicValues = [];
-    Object.keys(classPerf).forEach((topic) => {
-      const p = classPerf[topic];
-      if (p.max > 0) {
-        topicLabels.push(topic);
-        topicValues.push((p.points / p.max) * 100);
-      }
-    });
-    if (topicChart) topicChart.destroy();
-    topicChart = new Chart(ctxTopic, {
-      type: 'bar',
-      data: {
-        labels: topicLabels,
-        datasets: [
-          {
-            label: 'Class Average (%)',
-            data: topicValues,
-            backgroundColor: 'rgba(255, 159, 64, 0.5)',
-            borderColor: 'rgba(255, 159, 64, 1)',
-            borderWidth: 1
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: {
-            display: true
-          },
-          title: {
-            display: true,
-            text: 'Class Average by Topic'
-          }
-        },
-        scales: {
-          y: {
-            beginAtZero: true,
-            max: 100
-          }
-        }
-      }
-    });
-    // Render individual student topic charts
-    const studentChartsContainer = document.getElementById('student-topic-charts');
-    studentChartsContainer.innerHTML = '';
-    students.forEach((student) => {
-      const perf = computeTopicPerformance(student.id);
-      const topics = Object.keys(perf);
-      if (topics.length === 0) return;
-      const div = document.createElement('div');
-      div.className = 'chart-wrapper';
-      const title = document.createElement('h3');
-      title.textContent = `${student.name} Topic Performance`;
-      div.appendChild(title);
-      const canvas = document.createElement('canvas');
-      div.appendChild(canvas);
-      studentChartsContainer.appendChild(div);
-      const labels = [];
-      const values = [];
-      topics.forEach((t) => {
-        const data = perf[t];
-        if (data.max > 0) {
-          labels.push(t);
-          values.push((data.points / data.max) * 100);
-        }
-      });
-      new Chart(canvas.getContext('2d'), {
-        type: 'radar',
-        data: {
-          labels,
-          datasets: [
-            {
-              label: `${student.name}`,
-              data: values,
-              backgroundColor: 'rgba(54, 162, 235, 0.2)',
-              borderColor: 'rgba(54, 162, 235, 1)',
-              borderWidth: 1
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            r: {
-              beginAtZero: true,
-              max: 100
-            }
-          }
-        }
-      });
-    });
-
-    // Render gender-level chart (average per gender) if canvas exists
-    const genderCanvas = document.getElementById('gender-chart');
-    if (genderCanvas) {
-      const ctxGender = genderCanvas.getContext('2d');
-      const genderPerf = computeGenderAverages();
-      const genderLabels = [];
-      const genderValues = [];
-      Object.keys(genderPerf).forEach((g) => {
-        const d = genderPerf[g];
-        genderLabels.push(g);
-        if (d.max > 0) {
-          genderValues.push((d.points / d.max) * 100);
-        } else {
-          genderValues.push(0);
-        }
-      });
-      if (genderChart) genderChart.destroy();
-      genderChart = new Chart(ctxGender, {
-        type: 'bar',
-        data: {
-          labels: genderLabels,
-          datasets: [
-            {
-              label: 'Average (%)',
-              data: genderValues,
-              backgroundColor: 'rgba(153, 102, 255, 0.5)',
-              borderColor: 'rgba(153, 102, 255, 1)',
-              borderWidth: 1
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: {
-              display: true
-            },
-            title: {
-              display: true,
-              text: 'Average Score by Gender'
-            }
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 100
-            }
-          }
-        }
-      });
-    }
-  }
-
-  // Generate AI-like summary conclusion
-  function generateAIConclusion() {
-    if (students.length === 0 || assignments.length === 0) {
-      return 'Add students and assignments to generate a summary.';
-    }
-    const classAvg = computeClassAverage();
-    // Identify best and worst students
-    let best = null;
-    let worst = null;
-    students.forEach((student) => {
-      const avg = computeStudentAverage(student.id);
-      if (avg !== null) {
-        if (!best || avg > best.avg) best = { name: student.name, avg };
-        if (!worst || avg < worst.avg) worst = { name: student.name, avg };
-      }
-    });
-    // Identify topics with highest and lowest class average
-    const classPerf = computeClassTopicPerformance();
-    let topTopic = null;
-    let topValue = -1;
-    let lowTopic = null;
-    let lowValue = Infinity;
-    Object.keys(classPerf).forEach((topic) => {
-      const d = classPerf[topic];
-      if (d.max > 0) {
-        const pct = (d.points / d.max) * 100;
-        if (pct > topValue) {
-          topValue = pct;
-          topTopic = topic;
-        }
-        if (pct < lowValue) {
-          lowValue = pct;
-          lowTopic = topic;
-        }
-      }
-    });
-    // Identify students with notable improvement or decline
-    const improving = [];
-    const declining = [];
-    students.forEach((student) => {
-      const imp = computeStudentImprovement(student.id);
-      if (imp !== null) {
-        if (imp > 5) improving.push(student.name);
-        else if (imp < -5) declining.push(student.name);
-      }
-    });
-    let parts = [];
-    parts.push(`The class average across all topics is ${classAvg !== null ? classAvg.toFixed(2) : 'N/A'}%.`);
-    if (best) parts.push(`Top performer: ${best.name} (${best.avg.toFixed(2)}%).`);
-    if (worst) parts.push(`Lowest performer: ${worst.name} (${worst.avg.toFixed(2)}%).`);
-    if (topTopic !== null) parts.push(`Strongest topic: ${topTopic} (${topValue.toFixed(2)}%).`);
-    if (lowTopic !== null) parts.push(`Weakest topic: ${lowTopic} (${lowValue.toFixed(2)}%).`);
-    if (improving.length > 0) parts.push(`Students showing improvement: ${improving.join(', ')}.`);
-    if (declining.length > 0) parts.push(`Students showing decline: ${declining.join(', ')}. They may need extra support.`);
-    // Gender average comparison: if multiple gender groups exist
-    const genderPerf = computeGenderAverages();
-    const genderAverages = [];
-    Object.keys(genderPerf).forEach((g) => {
-      const d = genderPerf[g];
-      if (d.max > 0) {
-        genderAverages.push({ gender: g, avg: (d.points / d.max) * 100 });
-      }
-    });
-    if (genderAverages.length >= 2) {
-      // Sort by average descending
-      genderAverages.sort((a, b) => b.avg - a.avg);
-      const topG = genderAverages[0];
-      const bottomG = genderAverages[genderAverages.length - 1];
-      const diff = topG.avg - bottomG.avg;
-      const genderParts = genderAverages.map((ga) => `${ga.gender}: ${ga.avg.toFixed(2)}%`);
-      parts.push(`Average by gender – ${genderParts.join(', ')}. Difference between ${topG.gender} and ${bottomG.gender} is ${diff.toFixed(2)}%.`);
-    }
-
-    // Section average comparison: highlight differences between class sections
-    const sectionPerf = computeSectionAverages();
-    const sectionAverages = [];
-    Object.keys(sectionPerf).forEach((sect) => {
-      const d = sectionPerf[sect];
-      if (d.max > 0) {
-        sectionAverages.push({ section: sect, avg: (d.points / d.max) * 100 });
-      }
-    });
-    if (sectionAverages.length >= 2) {
-      sectionAverages.sort((a, b) => b.avg - a.avg);
-      const topS = sectionAverages[0];
-      const bottomS = sectionAverages[sectionAverages.length - 1];
-      const sDiff = topS.avg - bottomS.avg;
-      const sParts = sectionAverages.map((sa) => `${sa.section}: ${sa.avg.toFixed(2)}%`);
-      parts.push(`Average by section – ${sParts.join(', ')}. Difference between ${topS.section} and ${bottomS.section} is ${sDiff.toFixed(2)}%.`);
-    }
-    if (parts.length === 0) return 'Not enough data for summary.';
-    return parts.join(' ');
-  }
-
-  // Render all sections
-  function renderAll() {
-    renderStudentsList();
-    renderAssignmentsList();
-    renderGradesTable();
-    renderSummary();
-    renderAnalysis();
-    renderTopicAnalysis();
-    renderGenderAnalysis();
-    renderSectionAnalysis();
-    renderCharts();
-  }
-
-  // Event handlers for forms and buttons
-  function attachEventHandlers() {
-    // Set up the student form to call the global uiAddStudent() when submitted (e.g., hitting Enter)
-    const studentForm = document.getElementById('student-form');
-    studentForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      // Use global function to ensure section is captured and state updates
-      if (typeof window.uiAddStudent === 'function') {
-        window.uiAddStudent();
-      }
-    });
-
-    // Ensure the Add Student button triggers the global uiAddStudent function when clicked.
-    const addStudentBtn = document.getElementById('add-student-btn');
-    if (addStudentBtn) {
-      addStudentBtn.addEventListener('click', () => {
-        if (typeof window.uiAddStudent === 'function') {
-          window.uiAddStudent();
-        }
-      });
-    }
-    // Handle adding questions dynamically
-    const addQBtn = document.getElementById('add-question-btn');
-    addQBtn.addEventListener('click', () => {
-      const container = document.getElementById('questions-container');
-      const row = document.createElement('div');
-      row.className = 'question-row';
-      const qText = document.createElement('input');
-      qText.type = 'text';
-      qText.placeholder = 'Question text';
-      qText.className = 'question-text';
-      qText.required = true;
-      const qMax = document.createElement('input');
-      qMax.type = 'number';
-      qMax.placeholder = 'Max points';
-      qMax.min = '1';
-      qMax.className = 'question-max';
-      qMax.required = true;
-      const qTopic = document.createElement('input');
-      qTopic.type = 'text';
-      qTopic.placeholder = 'Topic';
-      qTopic.className = 'question-topic';
-      qTopic.required = true;
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.textContent = 'Remove';
-      removeBtn.className = 'remove-question-btn';
-      removeBtn.addEventListener('click', () => {
-        row.remove();
-      });
-      row.appendChild(qText);
-      row.appendChild(qMax);
-      row.appendChild(qTopic);
-      row.appendChild(removeBtn);
-      container.appendChild(row);
-    });
-    const assignmentForm = document.getElementById('assignment-form');
-    assignmentForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const titleInput = document.getElementById('assignment-title');
-      const subjectInput = document.getElementById('assignment-subject');
-      const title = titleInput.value.trim();
-      const subject = subjectInput.value.trim();
-      // Gather questions
-      const rows = Array.from(document.querySelectorAll('#questions-container .question-row'));
-      const questions = [];
-      let valid = true;
-      rows.forEach((row) => {
-        const textEl = row.querySelector('.question-text');
-        const maxEl = row.querySelector('.question-max');
-        const topicEl = row.querySelector('.question-topic');
-        const qTextVal = textEl.value.trim();
-        const qMaxVal = parseFloat(maxEl.value);
-        const qTopicVal = topicEl.value.trim() || 'General';
-        if (!qTextVal || isNaN(qMaxVal) || qMaxVal <= 0) {
-          valid = false;
-        } else {
-          questions.push({ id: generateId('q'), text: qTextVal, maxPoints: qMaxVal, topic: qTopicVal });
-        }
-      });
-      if (!title || !subject || questions.length === 0 || !valid) {
-        alert('Please provide a title, subject, and at least one valid question with positive max points.');
-        return;
-      }
-      addAssignment(title, subject, questions);
-      // Clear form inputs
-      titleInput.value = '';
-      subjectInput.value = '';
-      // Remove question rows
-      document.getElementById('questions-container').innerHTML = '';
-    });
-    // AI conclusion button
-    const conclusionBtn = document.getElementById('generate-conclusion-btn');
-    conclusionBtn.addEventListener('click', () => {
-      const summary = generateAIConclusion();
-      const container = document.getElementById('ai-conclusion-container');
-      container.textContent = summary;
-    });
-  }
-
-  // Initialize the app
-  function init() {
-    loadData();
-    attachEventHandlers();
-    // Set current year in footer
-    document.getElementById('year').textContent = new Date().getFullYear();
-    renderAll();
-  }
-
-  // Run init on DOMContentLoaded
-  document.addEventListener('DOMContentLoaded', init);
-
-  // Expose a global function to handle adding a student. This is used as an
-  // onclick handler in the HTML. By binding through the window object we
-  // bypass potential issues with file:// event listeners not firing. It
-  // simply reads the input values, invokes the internal addStudent function,
-  // and resets the form fields.
-  window.uiAddStudent = function () {
-    const nameInput = document.getElementById('student-name');
-    const genderSelect = document.getElementById('student-gender');
-    const sectionInput = document.getElementById('student-section');
-    const name = nameInput.value ? nameInput.value.trim() : '';
-    const gender = genderSelect ? genderSelect.value : '';
-    const section = sectionInput ? sectionInput.value.trim() : '';
-    if (name) {
-      // Use the internal addStudent function defined in this closure.
-      addStudent(name, gender, section);
-      // Clear input fields
-      nameInput.value = '';
-      if (genderSelect) genderSelect.selectedIndex = 0;
-      if (sectionInput) sectionInput.value = '';
-    }
-  };
-
-  /**
-   * Import students from a file (CSV or Excel).
-   * The file should contain rows of data: the first column is the student name.
-   * Optional columns for gender and section follow. This function will read
-   * the file using FileReader. If the file is an Excel sheet (.xlsx/.xls) and
-   * the `readXlsxFile` global function (from the read-excel-file library) is
-   * available, it will use that; otherwise it falls back to CSV parsing.
-   */
-  window.uiImportStudents = function () {
-    const input = document.getElementById('student-upload-file');
-    if (!input || !input.files || input.files.length === 0) {
-      alert('Please select a file to import students.');
-      return;
-    }
-    const file = input.files[0];
-    const fileName = file.name.toLowerCase();
-    const ext = fileName.split('.').pop();
-    const processRows = (rows) => {
-      // Skip header row if it seems like a header (non-empty strings and not numbers)
-      rows.forEach((row, idx) => {
-        if (!row || row.length === 0) return;
-        // Trim each cell value
-        const [nameRaw, genderRaw, sectionRaw] = row;
-        if (idx === 0) {
-          // If header row (e.g., "Name"), detect by checking if name cell contains letters and not digits
-          const cell = String(nameRaw || '').toLowerCase();
-          if (cell.includes('name') || cell.includes('student')) {
-            return;
-          }
-        }
-        const name = (nameRaw || '').toString().trim();
-        if (!name) return;
-        const gender = (genderRaw || '').toString().trim();
-        const section = (sectionRaw || '').toString().trim();
-        addStudent(name, gender, section);
-      });
-      // Clear file input
-      input.value = '';
-      alert('Students imported successfully.');
+    const findCol = (...names) => lowHeaders.findIndex(h => names.some(n => h === n || h.includes(n)));
+    const cols = {
+      total: findCol('total'), ntGrade: findCol('nt grade'), teacherGrade: findCol('teacher grade'), finalGrade: findCol('final grade'),
+      deviation1: findCol('deviations'), reason: findCol('reason'), motivation: findCol('motivation')
     };
-    if (ext === 'xlsx' || ext === 'xls') {
-      // Try to use readXlsxFile if available
-      if (typeof readXlsxFile === 'function') {
-        readXlsxFile(file)
-          .then((rows) => {
-            processRows(rows);
-          })
-          .catch((err) => {
-            console.error(err);
-            alert('Failed to parse Excel file. Please convert it to CSV or ensure the file format is correct.');
-          });
-        return;
-      } else {
-        alert('Excel import library is not available. Please convert the file to CSV format.');
-        return;
-      }
-    }
-    // Fallback: parse as CSV
-    const reader = new FileReader();
-    reader.onload = function (e) {
-      const text = e.target.result;
-      const lines = text.split(/\r?\n/);
-      const rows = lines.map((line) => line.split(','));
-      processRows(rows);
-    };
-    reader.onerror = function () {
-      alert('Failed to read the file.');
-    };
-    reader.readAsText(file);
-  };
+    // If two Deviations columns exist, use first after NT/teacher and second after final when possible.
+    const deviationCols = lowHeaders.map((h,i)=>h.includes('deviation')?i:-1).filter(i=>i>=0);
+    cols.ntTeacherDeviation = deviationCols[0] ?? cols.deviation1;
+    cols.finalDeviation = deviationCols[1] ?? cols.deviation1;
 
-  /**
-   * Import questions from a file (CSV or Excel) into the current assignment form.
-   * Each row should contain: question text, max points, topic. The first
-   * row can optionally be a header. This function will create question rows
-   * inside the assignment form based on the imported data.
-   */
-  window.uiImportQuestions = function () {
-    const input = document.getElementById('question-upload-file');
-    if (!input || !input.files || input.files.length === 0) {
-      alert('Please select a file to import questions.');
-      return;
-    }
-    const file = input.files[0];
-    const fileName = file.name.toLowerCase();
-    const ext = fileName.split('.').pop();
-    const container = document.getElementById('questions-container');
-    if (!container) return;
-    const addRows = (rows) => {
-      rows.forEach((row, idx) => {
-        if (!row || row.length === 0) return;
-        let [textRaw, maxRaw, topicRaw] = row;
-        if (idx === 0) {
-          // Skip header row if first cell looks like a header label
-          const cell = String(textRaw || '').toLowerCase();
-          if (cell.includes('question') || cell.includes('text')) {
-            return;
-          }
-        }
-        const text = (textRaw || '').toString().trim();
-        const max = parseFloat(maxRaw);
-        const topic = (topicRaw || '').toString().trim() || 'General';
-        if (!text || isNaN(max) || max <= 0) return;
-        // Create a new question row in the form
-        const rowEl = document.createElement('div');
-        rowEl.className = 'question-row';
-        const qText = document.createElement('input');
-        qText.type = 'text';
-        qText.placeholder = 'Question text';
-        qText.className = 'question-text';
-        qText.value = text;
-        qText.required = true;
-        const qMax = document.createElement('input');
-        qMax.type = 'number';
-        qMax.placeholder = 'Max points';
-        qMax.className = 'question-max';
-        qMax.min = '1';
-        qMax.value = max;
-        qMax.required = true;
-        const qTopic = document.createElement('input');
-        qTopic.type = 'text';
-        qTopic.placeholder = 'Topic';
-        qTopic.className = 'question-topic';
-        qTopic.value = topic;
-        qTopic.required = true;
-        const removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.textContent = 'Remove';
-        removeBtn.className = 'remove-question-btn';
-        removeBtn.addEventListener('click', () => {
-          rowEl.remove();
-        });
-        rowEl.appendChild(qText);
-        rowEl.appendChild(qMax);
-        rowEl.appendChild(qTopic);
-        rowEl.appendChild(removeBtn);
-        container.appendChild(rowEl);
+    const students=[];
+    for(let r=2; r<rows.length; r++){
+      const row=rows[r]; const name=norm(row[nameIndex]); if(!name) continue;
+      const scores = questions.map(q=>({label:q.label, max:q.max, score:toNumber(row[q.col]), topic:q.topic}));
+      const totalFromScores = scores.reduce((a,s)=>a + (s.score ?? 0), 0);
+      const total = toNumber(row[cols.total]) ?? totalFromScores;
+      const gender = genderIndex >= 0 ? cleanGender(row[genderIndex]) : '';
+      students.push({
+        name, gender, scores, total,
+        ntGrade: cleanGrade(row[cols.ntGrade]),
+        teacherGrade: cleanGrade(row[cols.teacherGrade]),
+        finalGrade: cleanGrade(row[cols.finalGrade]),
+        ntTeacherDeviation: norm(row[cols.ntTeacherDeviation]),
+        finalDeviation: norm(row[cols.finalDeviation]),
+        reason: norm(row[cols.reason]),
+        motivation: norm(row[cols.motivation])
       });
-      input.value = '';
-      alert('Questions imported successfully.');
-    };
-    if (ext === 'xlsx' || ext === 'xls') {
-      if (typeof readXlsxFile === 'function') {
-        readXlsxFile(file)
-          .then((rows) => {
-            addRows(rows);
-          })
-          .catch((err) => {
-            console.error(err);
-            alert('Failed to parse Excel file. Please convert it to CSV or ensure the file format is correct.');
-          });
-        return;
-      } else {
-        alert('Excel import library is not available. Please convert the file to CSV format.');
-        return;
-      }
     }
-    // Fallback: parse CSV
-    const reader = new FileReader();
-    reader.onload = function (e) {
-      const text = e.target.result;
-      const lines = text.split(/\r?\n/);
-      const rows = lines.map((line) => line.split(','));
-      addRows(rows);
-    };
-    reader.onerror = function () {
-      alert('Failed to read the file.');
-    };
-    reader.readAsText(file);
-  };
+    return {questions, students, maxTotal: questions.reduce((a,q)=>a+q.max,0)};
+  }
+
+  async function importNationalTest(){
+    const f=document.getElementById('ntFile').files[0]; if(!f) return alert('Choose a National Test file first.');
+    try{
+      const parsed=parseNationalTestRows(await readRows(f));
+      const title=norm(document.getElementById('ntTitle').value) || f.name.replace(/\.[^.]+$/,'');
+      const subject=norm(document.getElementById('ntSubject').value) || 'National Test';
+      const className=norm(document.getElementById('ntClass').value) || inferClassFromFile(f.name);
+      const test={id:id('nt'), title, subject, className, importedAt:new Date().toISOString(), ...parsed};
+      test.students.forEach(r=>upsertStudent(r.name, r.gender || '', className));
+      state.ntTests.push(test); activeTestId=test.id; state.settings.activeTestId=activeTestId; saveState(); render();
+      const genderCount = test.students.filter(s=>s.gender).length;
+      document.getElementById('ntImportStatus').textContent = `Imported ${test.students.length} students, ${test.questions.length} questions, max total ${test.maxTotal}. Gender imported for ${genderCount} students.`;
+    } catch(e){ alert(e.message); }
+  }
+  function inferClassFromFile(name){ const m=name.match(/\b(\d+[A-Z])\b/i); return m ? m[1].toUpperCase() : ''; }
+
+  async function importStudents(){
+    const f=document.getElementById('studentFile').files[0]; if(!f) return alert('Choose a student file first.');
+    try{ const rows=await readRows(f); let count=0; rows.forEach((r,i)=>{ if(i===0 && /name|student/i.test(norm(r[0]))) return; if(norm(r[0])){ upsertStudent(r[0], r[1], r[2]); count++; }}); saveState(); render(); alert(`Imported ${count} students.`);} catch(e){ alert(e.message); }
+  }
+  async function importYear(){
+    const f=document.getElementById('yearFile').files[0]; if(!f) return alert('Choose an assessment file first.');
+    try{
+      const rows=await readRows(f); let count=0; const head=rows[0].map(x=>norm(x).toLowerCase());
+      const get=(r,n,def)=>{ const i=head.indexOf(n); return i>=0 ? r[i] : (r[def]||''); };
+      rows.forEach((r,i)=>{ if(i===0 && head.includes('name')) return; const name=norm(get(r,'name',0)); const score=toNumber(get(r,'score',2)); const max=toNumber(get(r,'max',3)); if(name && score!==null && max){ upsertStudent(name); state.assessments.push({id:id('ass'), name, title:norm(get(r,'assessment',1)), score, max, grade:cleanGrade(get(r,'grade',4)), topic:norm(get(r,'topic',5)), subject:norm(get(r,'subject',6)), date:norm(get(r,'date',7))}); count++; }});
+      saveState(); render(); document.getElementById('yearStatus').textContent=`Imported ${count} assessment rows.`;
+    } catch(e){ alert(e.message); }
+  }
+  function addAssessment(){ const name=norm($('#manualAssessmentName').value), score=toNumber($('#manualAssessmentScore').value), max=toNumber($('#manualAssessmentMax').value); if(!name||score===null||!max) return alert('Name, score, and max are required.'); upsertStudent(name); state.assessments.push({id:id('ass'), name, title:norm($('#manualAssessmentTitle').value), score, max, grade:cleanGrade($('#manualAssessmentGrade').value), topic:norm($('#manualAssessmentTopic').value), subject:norm($('#manualAssessmentSubject').value), date:new Date().toISOString().slice(0,10)}); saveState(); render(); }
+  function $(s){ return document.querySelector(s); }
+
+  function studentYearAvg(name){ const rows=state.assessments.filter(a=>a.name.toLowerCase()===name.toLowerCase()); const max=rows.reduce((a,r)=>a+r.max,0); if(!max) return null; return rows.reduce((a,r)=>a+r.score,0)/max*100; }
+  function classAvg(rows){ const vals=rows.map(r=>r.totalPercent).filter(v=>v!==null); return vals.length? vals.reduce((a,b)=>a+b,0)/vals.length : null; }
+  function analysisRows(test){ if(!test) return []; return getFilteredRows(test).map(r=>{ const stu=getStudent(r.name)||{}; const totalPercent = test.maxTotal ? (r.total/test.maxTotal*100) : null; const yearAvg=studentYearAvg(r.name); const weakTopic=studentWeakTopic(test,r); return {...r, gender:stu.gender||'Unspecified', section:stu.section||test.className||'', totalPercent, yearAvg, weakTopic, ntToTeacher:gradeDiff(r.ntGrade,r.teacherGrade), ntToFinal:gradeDiff(r.ntGrade,r.finalGrade)}; }); }
+  function studentWeakTopic(test,r){ const map={}; r.scores.forEach((s,i)=>{ const topic=test.questions[i]?.topic||'General'; if(s.score===null) return; if(!map[topic]) map[topic]={score:0,max:0}; map[topic].score+=s.score; map[topic].max+=s.max; }); let weak=''; let pct=Infinity; Object.entries(map).forEach(([t,d])=>{ const p=d.max?d.score/d.max*100:Infinity; if(p<pct){pct=p; weak=t;} }); return weak?`${weak} (${pct.toFixed(0)}%)`:''; }
+  function questionStats(test, rows){ return test.questions.map((q,i)=>{ const vals=rows.map(r=>r.scores[i]?.score).filter(v=>v!==null); const avg=vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null; return {label:q.label, topic:q.topic, max:q.max, avg, percent:avg===null?null:avg/q.max*100, attempts:vals.length}; }); }
+  function topicStats(test, rows){ const map={}; rows.forEach(r=>r.scores.forEach((s,i)=>{ if(s.score===null) return; const topic=test.questions[i]?.topic || 'General'; if(!map[topic]) map[topic]={score:0,max:0}; map[topic].score+=s.score; map[topic].max+=s.max; })); return Object.entries(map).map(([topic,d])=>({topic, percent:d.max?d.score/d.max*100:null, score:d.score, max:d.max})); }
+
+  function render(){ renderStudents(); renderSelectors(); renderTopics(); renderDashboard(); renderStudentTable(); }
+  function renderStudents(){ const div=$('#studentsTable'); if(!state.students.length){div.innerHTML='<p class="hint">No students yet.</p>'; return;} div.innerHTML='<table><thead><tr><th>Name</th><th>Gender</th><th>Class/Section</th><th></th></tr></thead><tbody>'+state.students.map(s=>`<tr><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.gender||'')}</td><td>${escapeHtml(s.section||'')}</td><td><button class="danger" data-del-student="${s.id}">Delete</button></td></tr>`).join('')+'</tbody></table>'; }
+  function renderSelectors(){ const sel=$('#testSelector'); sel.innerHTML = state.ntTests.length ? state.ntTests.map(t=>`<option value="${t.id}" ${t.id===activeTestId?'selected':''}>${escapeHtml(t.title)}</option>`).join('') : '<option value="">No test imported</option>'; const sections=[...new Set(state.students.map(s=>s.section).filter(Boolean).concat(state.ntTests.map(t=>t.className).filter(Boolean)))]; $('#sectionFilter').innerHTML='<option value="all">All</option>'+sections.map(s=>`<option>${escapeHtml(s)}</option>`).join(''); const genders=[...new Set(state.students.map(s=>s.gender||'Unspecified'))]; $('#genderFilter').innerHTML='<option value="all">All</option>'+genders.map(g=>`<option>${escapeHtml(g)}</option>`).join(''); }
+  function renderTopics(){ const test=selectedTest(); const div=$('#topicEditor'); if(!test){div.innerHTML='<p class="hint">Import a National Test first.</p>'; return;} div.innerHTML='<table><thead><tr><th>Question</th><th>Max points</th><th>Topic</th></tr></thead><tbody>'+test.questions.map((q,i)=>`<tr><td>${escapeHtml(q.label)}</td><td>${q.max}</td><td><input class="topic-input" data-topic-index="${i}" value="${escapeHtml(q.topic||'General')}"></td></tr>`).join('')+'</tbody></table>'; }
+  function renderDashboard(){ const test=selectedTest(); const rows=analysisRows(test); if(!test){ $('#kpiGrid').innerHTML='<div class="kpi"><div class="label">Status</div><div class="value">No NT</div></div>'; ['gradeChart','questionChart','topicChart','deviationChart'].forEach(id=>$('#'+id).innerHTML=''); return; } const avg=classAvg(rows); const failNt=rows.filter(r=>r.ntGrade==='F').length; const failFinal=rows.filter(r=>r.finalGrade==='F').length; const diffUp=rows.filter(r=>r.ntToFinal>0).length; const diffDown=rows.filter(r=>r.ntToFinal<0).length; $('#kpiGrid').innerHTML=[['Students',rows.length],['NT average',avg===null?'-':avg.toFixed(1)+'%'],['Failing NT',failNt],['Failing final',failFinal],['Final up/down',`${diffUp}/${diffDown}`]].map(k=>`<div class="kpi"><div class="label">${k[0]}</div><div class="value">${k[1]}</div></div>`).join(''); renderBarChart('gradeChart', gradeDistribution(rows), 'grade'); renderBarChart('questionChart', questionStats(test,rows).filter(q=>q.percent!==null).sort((a,b)=>a.percent-b.percent).slice(0,8).map(q=>({label:'Q'+q.label, value:q.percent, color:'bad'})), 'percent'); renderBarChart('topicChart', topicStats(test,rows).filter(t=>t.percent!==null).sort((a,b)=>a.percent-b.percent).map(t=>({label:t.topic, value:t.percent, color:t.percent<50?'bad':t.percent<70?'warn':'good'})), 'percent'); renderBarChart('deviationChart', [{label:'Same',value:rows.filter(r=>r.ntToFinal===0).length,color:'good'},{label:'Final higher',value:diffUp,color:'warn'},{label:'Final lower',value:diffDown,color:'bad'}], 'count'); }
+  function gradeDistribution(rows){ return GRADE_ORDER.map(g=>({label:g, value:rows.filter(r=>r.ntGrade===g).length, color:g==='F'?'bad':'good'})); }
+  function renderBarChart(id, data, mode){ const max=Math.max(1,...data.map(d=>d.value||0)); $('#'+id).innerHTML = data.length?data.map(d=>`<div class="bar-row"><div>${escapeHtml(d.label)}</div><div class="bar-track"><div class="bar-fill ${d.color||''}" style="width:${Math.max(2,(d.value/max*100))}%"></div></div><div>${mode==='percent'?d.value.toFixed(0)+'%':d.value}</div></div>`).join(''):'<p class="hint">No data.</p>'; }
+  function renderStudentTable(){ const test=selectedTest(); const rows=analysisRows(test); if(!test){ $('#studentAnalysisTable').innerHTML='<p class="hint">Import a National Test first.</p>'; return;} $('#studentAnalysisTable').innerHTML='<table><thead><tr><th>Name</th><th>Gender</th><th>Section</th><th>NT total</th><th>NT %</th><th>NT grade</th><th>Teacher grade</th><th>Final grade</th><th>NT → Final</th><th>Year avg</th><th>Weakest topic</th><th>Support suggestion</th><th>Motivation</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.gender)}</td><td>${escapeHtml(r.section)}</td><td>${r.total}/${test.maxTotal}</td><td>${r.totalPercent?.toFixed(1)||'-'}%</td><td>${badge(r.ntGrade)}</td><td>${badge(r.teacherGrade)}</td><td>${badge(r.finalGrade)}</td><td>${badge(diffText(r.ntToFinal), r.ntToFinal===0?'good':r.ntToFinal>0?'warn':'bad')}</td><td>${r.yearAvg===null?'-':r.yearAvg.toFixed(1)+'%'}</td><td>${escapeHtml(r.weakTopic)}</td><td>${escapeHtml(supportText(r))}</td><td>${escapeHtml(r.motivation || r.reason || '')}</td></tr>`).join('')+'</tbody></table>'; }
+  function badge(text,type){ type=type || (text==='F'?'bad':text==='-'?'neutral':'good'); return `<span class="badge ${type}">${escapeHtml(text||'-')}</span>`; }
+  function supportText(r){ const p=r.totalPercent??0; if(r.ntGrade==='F'&&r.finalGrade==='F') return 'High priority: needs support plan and focused practice.'; if(r.ntGrade==='F'&&r.finalGrade!=='F') return 'Check evidence from class work; support NT exam skills.'; if(p<50) return 'Needs practice on basic knowledge and vocabulary.'; if(r.ntToFinal<0) return 'Final grade is lower than NT; review missing yearly evidence.'; if(r.weakTopic) return 'Target practice: '+r.weakTopic; return 'Continue regular practice and feedback.'; }
+
+  function generateConclusion(){ const test=selectedTest(); const rows=analysisRows(test); if(!test||!rows.length){ $('#conclusionBox').textContent='Import a National Test first.'; return;} const avg=classAvg(rows); const q=questionStats(test,rows).filter(x=>x.percent!==null).sort((a,b)=>a.percent-b.percent)[0]; const t=topicStats(test,rows).filter(x=>x.percent!==null).sort((a,b)=>a.percent-b.percent)[0]; const failNt=rows.filter(r=>r.ntGrade==='F'), failFinal=rows.filter(r=>r.finalGrade==='F'); const up=rows.filter(r=>r.ntToFinal>0), down=rows.filter(r=>r.ntToFinal<0); const byGender=groupAvg(rows,'gender'), bySection=groupAvg(rows,'section'); let txt=`Summary for ${test.title}\n\nClass average in the National Test: ${avg?.toFixed(1)}%.\nStudents failing the National Test: ${failNt.length}. Students failing final grade: ${failFinal.length}.\nFinal grade higher than NT grade: ${up.length}. Final grade lower than NT grade: ${down.length}.\n`; if(q) txt+=`\nWeakest question: Question ${q.label} (${q.percent.toFixed(1)}% average).`; if(t) txt+=`\nWeakest topic: ${t.topic} (${t.percent.toFixed(1)}% average).`; txt+=`\n\nGender trend: ${byGender}.\nSection trend: ${bySection}.\n\nSuggested action:\n1. Give focused practice on the weakest topic and weakest questions.\n2. Check students with F in NT and F in final grade first.\n3. For students where final grade is different from NT grade, write a short evidence note explaining the difference.\n4. Use the question report to plan revision groups.`; $('#conclusionBox').textContent=txt; }
+  function groupAvg(rows,key){ const m={}; rows.forEach(r=>{ const k=r[key]||'Unspecified'; if(!m[k]) m[k]=[]; if(r.totalPercent!==null) m[k].push(r.totalPercent); }); return Object.entries(m).map(([k,v])=>`${k}: ${(v.reduce((a,b)=>a+b,0)/v.length).toFixed(1)}%`).join(', ') || 'No data'; }
+
+  function studentReportCsv(){ const test=selectedTest(); return ['Name,Gender,Section,NT Total,Max,NT %,NT Grade,Teacher Grade,Final Grade,NT to Final,Year Avg,Weakest Topic,Support Suggestion,Motivation'].concat(analysisRows(test).map(r=>[r.name,r.gender,r.section,r.total,test.maxTotal,r.totalPercent?.toFixed(1),r.ntGrade,r.teacherGrade,r.finalGrade,diffText(r.ntToFinal),r.yearAvg===null?'':r.yearAvg.toFixed(1),r.weakTopic,supportText(r),r.motivation||r.reason||''].map(csvEscape).join(','))).join('\n'); }
+  function questionReportCsv(){ const test=selectedTest(); return ['Question,Topic,Max,Average,Percent,Attempts'].concat(questionStats(test,analysisRows(test)).map(q=>[q.label,q.topic,q.max,q.avg?.toFixed(2)||'',q.percent?.toFixed(1)||'',q.attempts].map(csvEscape).join(','))).join('\n'); }
+
+  function attach(){
+    $('#addStudentBtn').addEventListener('click',()=>{ upsertStudent($('#studentName').value,$('#studentGender').value,$('#studentSection').value); $('#studentName').value=''; $('#studentGender').value=''; $('#studentSection').value=''; saveState(); render(); });
+    $('#importStudentsBtn').addEventListener('click',importStudents); $('#importNtBtn').addEventListener('click',importNationalTest); $('#importYearBtn').addEventListener('click',importYear); $('#addAssessmentBtn').addEventListener('click',addAssessment);
+    $('#testSelector').addEventListener('change',e=>{activeTestId=e.target.value; state.settings.activeTestId=activeTestId; saveState(); render();}); $('#sectionFilter').addEventListener('change',renderDashboard); $('#genderFilter').addEventListener('change',renderDashboard);
+    document.body.addEventListener('click',e=>{ const sid=e.target.dataset.delStudent; if(sid && confirm('Delete this student?')){ state.students=state.students.filter(s=>s.id!==sid); saveState(); render(); }});
+    document.body.addEventListener('change',e=>{ if(e.target.dataset.topicIndex){ const test=selectedTest(); if(test){ test.questions[+e.target.dataset.topicIndex].topic=norm(e.target.value)||'General'; test.students.forEach(r=>{ if(r.scores[+e.target.dataset.topicIndex]) r.scores[+e.target.dataset.topicIndex].topic=test.questions[+e.target.dataset.topicIndex].topic; }); saveState(); renderDashboard(); renderStudentTable(); }} });
+    $('#generateConclusionBtn').addEventListener('click',generateConclusion); $('#downloadStudentReportBtn').addEventListener('click',()=>downloadFile('student-analysis-report.csv', studentReportCsv(), 'text/csv')); $('#downloadQuestionReportBtn').addEventListener('click',()=>downloadFile('question-analysis-report.csv', questionReportCsv(), 'text/csv'));
+    $('#exportBackupBtn').addEventListener('click',()=>downloadFile('teacher-grade-analysis-backup.json', JSON.stringify(state,null,2), 'application/json'));
+    $('#importBackupInput').addEventListener('change',async e=>{ const f=e.target.files[0]; if(!f) return; const data=JSON.parse(await f.text()); Object.assign(state, data); activeTestId=state.settings?.activeTestId || state.ntTests?.[0]?.id || null; saveState(); render(); });
+    $('#clearAllBtn').addEventListener('click',()=>{ if(confirm('Delete all saved app data in this browser?')){ localStorage.removeItem(STORAGE_KEY); location.reload(); }});
+  }
+  attach(); render();
 })();

@@ -1,167 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Teacher Gradebook App</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Teacher Grade Analysis App</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <h1>Teacher Gradebook App</h1>
-    <p>Manage students, assignments, and grades easily</p>
+  <header class="app-header">
+    <div>
+      <h1>Teacher Grade Analysis App</h1>
+      <p>Compare National Test results with yearly performance, final grades, questions, topics, gender and class sections.</p>
+    </div>
+    <div class="header-actions">
+      <button id="exportBackupBtn" class="secondary">Export Backup</button>
+      <label class="file-label secondary">Import Backup<input id="importBackupInput" type="file" accept=".json" /></label>
+      <button id="clearAllBtn" class="danger">Clear All Data</button>
+    </div>
   </header>
+
   <main>
-    <!-- Student Management -->
-    <section id="students-section">
-      <h2>Students</h2>
-      <!-- Form to add a new student with name and gender -->
-      <form id="student-form" class="form-inline">
-        <input type="text" id="student-name" placeholder="Student name" required>
-        <!-- Optional gender selector for analysing performance by gender -->
-        <select id="student-gender">
-          <option value="" selected>Gender (optional)</option>
-          <option value="Female">Female</option>
-          <option value="Male">Male</option>
-          <option value="Non-binary">Non‑binary</option>
-          <option value="Prefer not to say">Prefer not to say</option>
-        </select>
-        <!-- Optional section/class input for grouping students -->
-        <input type="text" id="student-section" placeholder="Section (optional)" />
-        <!-- Add Student button triggers global handler -->
-        <button id="add-student-btn" type="button">Add Student</button>
-      </form>
-      <ul id="students-list"></ul>
+    <section class="card">
+      <h2>1. Students</h2>
+      <p class="hint">Add students manually or upload a CSV/Excel list. Student list format: <strong>Name, Gender, Class/Section</strong>. Gender and class are optional.</p>
+      <div class="grid-4">
+        <input id="studentName" type="text" placeholder="Student name" />
+        <select id="studentGender"><option value="">Gender (optional)</option><option>Female</option><option>Male</option><option>Non-binary</option><option>Prefer not to say</option></select>
+        <input id="studentSection" type="text" placeholder="Class / section, e.g. 9A" />
+        <button id="addStudentBtn">Add Student</button>
+      </div>
+      <div class="import-row">
+        <label class="file-label">Upload student list<input id="studentFile" type="file" accept=".csv,.xlsx,.xls" /></label>
+        <button id="importStudentsBtn" class="secondary">Import Students</button>
+      </div>
+      <div id="studentsTable" class="table-wrap"></div>
     </section>
 
-    <!-- Bulk Student Upload -->
-    <section id="student-upload-section">
-      <h3>Import Students</h3>
-      <p>Select a CSV or Excel (.xlsx) file with student data. The first column must be the student name. Optional columns for gender and section can follow.</p>
-      <input type="file" id="student-upload-file" accept=".csv,.xlsx,.xls" />
-      <button type="button" id="import-students-btn" onclick="uiImportStudents()">Import Students</button>
+    <section class="card accent">
+      <h2>2. National Test Import</h2>
+      <p class="hint">Upload your National Test CSV. The app understands the format where row 1 contains max points, row 2 contains Name, optional gender, question numbers, and later columns include Total, NT Grade, Teacher Grade, Final Grade and deviation notes.</p>
+      <div class="grid-3">
+        <input id="ntTitle" type="text" placeholder="Test title, e.g. 2026 National Test Kemi" />
+        <input id="ntSubject" type="text" placeholder="Subject, e.g. Chemistry / Kemi" />
+        <input id="ntClass" type="text" placeholder="Class, e.g. 9A" />
+      </div>
+      <div class="import-row">
+        <label class="file-label">Upload NT CSV/Excel<input id="ntFile" type="file" accept=".csv,.xlsx,.xls" /></label>
+        <button id="importNtBtn">Import National Test</button>
+      </div>
+      <div id="ntImportStatus" class="status"></div>
     </section>
 
-    <!-- Assignment and Test Management -->
-    <section id="assignments-section">
-      <h2>Assignments &amp; Tests</h2>
-      <!-- Form to create a new assignment/test with subject and questions -->
-      <form id="assignment-form" class="form-block">
-        <div class="form-group">
-          <input type="text" id="assignment-title" placeholder="Title" required>
+    <section class="card">
+      <h2>3. Rest of the Year / Class Assessments</h2>
+      <p class="hint">Optional: upload class assessment data to compare the National Test with yearly performance. Format: <strong>Name, Assessment, Score, Max, Grade, Topic, Subject, Date</strong>. Only Name, Score and Max are required.</p>
+      <div class="import-row">
+        <label class="file-label">Upload assessment CSV/Excel<input id="yearFile" type="file" accept=".csv,.xlsx,.xls" /></label>
+        <button id="importYearBtn" class="secondary">Import Year Assessments</button>
+      </div>
+      <details>
+        <summary>Add one class assessment manually</summary>
+        <div class="grid-4 mt">
+          <input id="manualAssessmentName" type="text" placeholder="Student name" />
+          <input id="manualAssessmentTitle" type="text" placeholder="Assessment title" />
+          <input id="manualAssessmentScore" type="number" placeholder="Score" min="0" step="0.1" />
+          <input id="manualAssessmentMax" type="number" placeholder="Max" min="0" step="0.1" />
+          <input id="manualAssessmentGrade" type="text" placeholder="Grade (optional)" />
+          <input id="manualAssessmentTopic" type="text" placeholder="Topic (optional)" />
+          <input id="manualAssessmentSubject" type="text" placeholder="Subject (optional)" />
+          <button id="addAssessmentBtn">Add Assessment</button>
         </div>
-        <div class="form-group">
-          <input type="text" id="assignment-subject" placeholder="Subject" required>
-        </div>
-        <div id="questions-container">
-          <!-- Question rows will be appended here via JavaScript -->
-        </div>
-        <div class="button-group">
-          <button type="button" id="add-question-btn">Add Question</button>
-          <button type="submit">Add Assignment</button>
-        </div>
-      </form>
-      <ul id="assignments-list"></ul>
+      </details>
+      <div id="yearStatus" class="status"></div>
     </section>
 
-    <!-- Bulk Question Upload -->
-    <section id="question-upload-section">
-      <h3>Import Questions</h3>
-      <p>Select a CSV or Excel (.xlsx) file with question data. Each row should include question text, max points, and topic. Imported questions will be added to the current assignment form.</p>
-      <input type="file" id="question-upload-file" accept=".csv,.xlsx,.xls" />
-      <button type="button" id="import-questions-btn" onclick="uiImportQuestions()">Import Questions</button>
+    <section class="card">
+      <h2>4. Question Topics</h2>
+      <p class="hint">After importing an NT file, assign topics to questions. This helps the app find the weakest topic for the class and for each student.</p>
+      <div id="topicEditor" class="table-wrap"></div>
     </section>
 
-    <!-- Grades Table -->
-    <section id="grades-section">
-      <h2>Grades</h2>
-      <div id="grades-table-container">
-        <!-- Table will be generated here -->
+    <section class="card">
+      <h2>5. Dashboard</h2>
+      <div class="filters"><label>National Test <select id="testSelector"></select></label><label>Class / Section <select id="sectionFilter"><option value="all">All</option></select></label><label>Gender <select id="genderFilter"><option value="all">All</option></select></label></div>
+      <div id="kpiGrid" class="kpi-grid"></div>
+      <div class="charts-grid">
+        <div class="chart-card"><h3>Grade Distribution</h3><div id="gradeChart"></div></div>
+        <div class="chart-card"><h3>Weakest Questions</h3><div id="questionChart"></div></div>
+        <div class="chart-card"><h3>Weakest Topics</h3><div id="topicChart"></div></div>
+        <div class="chart-card"><h3>National Test vs Final Grade</h3><div id="deviationChart"></div></div>
       </div>
     </section>
 
-    <!-- Summary -->
-    <section id="summary-section">
-      <h2>Summary</h2>
-      <div id="summary-container">
-        <!-- Summary will be generated here -->
-      </div>
+    <section class="card">
+      <h2>6. Student Analysis Table</h2>
+      <div class="button-row"><button id="downloadStudentReportBtn" class="secondary">Download Student Report CSV</button><button id="downloadQuestionReportBtn" class="secondary">Download Question Report CSV</button></div>
+      <div id="studentAnalysisTable" class="table-wrap wide"></div>
     </section>
 
-    <!-- Analysis -->
-    <section id="analysis-section">
-      <h2>Performance Analysis</h2>
-      <div id="analysis-container">
-        <!-- Analysis will be generated here -->
-      </div>
-    </section>
-
-    <!-- Topic Performance Analysis -->
-    <section id="topic-analysis-section">
-      <h2>Topic Performance</h2>
-      <div id="topic-analysis-container">
-        <!-- Topic analysis will be generated here -->
-      </div>
-    </section>
-
-    <!-- Charts and Visual Analytics -->
-    <section id="charts-section">
-      <h2>Visual Analytics</h2>
-      <div class="chart-wrapper">
-        <canvas id="assignment-chart" width="400" height="200"></canvas>
-      </div>
-      <div class="chart-wrapper">
-        <canvas id="topic-chart" width="400" height="200"></canvas>
-      </div>
-      <div id="student-topic-charts">
-        <!-- Individual student topic charts will appear here -->
-      </div>
-    </section>
-
-    <!-- AI Conclusion -->
-    <section id="ai-section">
-      <h2>AI‑Generated Summary</h2>
-      <button id="generate-conclusion-btn">Generate Conclusion</button>
-      <div id="ai-conclusion-container">
-        <!-- AI conclusion text will be inserted here -->
-      </div>
-    </section>
-
-    <!-- Gender Analysis -->
-    <section id="gender-analysis-section">
-      <h2>Gender Analysis</h2>
-      <div id="gender-analysis-container">
-        <!-- Gender analysis table will be generated here -->
-      </div>
-    </section>
-
-    <!-- Gender Chart -->
-    <section id="gender-charts-section">
-      <h2>Gender Visual Analytics</h2>
-      <div class="chart-wrapper">
-        <canvas id="gender-chart" width="400" height="200"></canvas>
-      </div>
-    </section>
-
-    <!-- Section Analysis -->
-    <section id="section-analysis-section">
-      <h2>Section Analysis</h2>
-      <div id="section-analysis-container">
-        <!-- Section analysis table will be generated here -->
-      </div>
+    <section class="card">
+      <h2>7. AI-style Conclusion</h2>
+      <p class="hint">This is rule-based and runs inside the browser. No student data is sent to any AI service.</p>
+      <button id="generateConclusionBtn">Generate Conclusion</button>
+      <div id="conclusionBox" class="conclusion"></div>
     </section>
   </main>
-  <footer>
-    <p>&copy; <span id="year"></span> Teacher Gradebook App</p>
-  </footer>
-  <!-- Chart.js library for generating graphs -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <!-- Library for parsing Excel files in the browser. If this script fails to load due to network restrictions, CSV import will still work. -->
+
+  <footer><p>Teacher Grade Analysis App • Data is saved in this browser only. Use Export Backup before changing computer or clearing browser data.</p></footer>
   <script src="https://unpkg.com/read-excel-file@5.1.0/bundle/read-excel-file.min.js"></script>
-  <!-- Append a version query string to the script to force browsers to reload the latest version.
-       Without this, some browsers may cache script.js when opened via file:// and ignore updates. -->
-  <!-- Update version query string whenever script changes to force reload -->
-  <!-- Update version query string whenever script changes to force reload -->
-  <script src="script.js?v=4"></script>
+  <script src="script.js?v=20260531-nt2"></script>
 </body>
 </html>
