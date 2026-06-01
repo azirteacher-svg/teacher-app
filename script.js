@@ -58,7 +58,44 @@
     else { if(cleanedGender) s.gender=cleanedGender; if(section) s.section=norm(section); }
   }
   function getStudent(name){ return state.students.find(s=>s.name.toLowerCase()===norm(name).toLowerCase()); }
-  function selectedTest(){ return state.ntTests.find(t=>t.id===activeTestId) || state.ntTests[0] || null; }
+  function selectedTest(){
+    if(activeTestId === 'all') return aggregateAllTests();
+    return state.ntTests.find(t=>t.id===activeTestId) || state.ntTests[0] || null;
+  }
+
+  function aggregateAllTests(){
+    if(!state.ntTests.length) return null;
+    const qMap = new Map();
+    state.ntTests.forEach(t=>{
+      (t.questions||[]).forEach(q=>{
+        const k = questionKey(q.label);
+        if(!qMap.has(k)) qMap.set(k, {...q, col: undefined});
+      });
+    });
+    const questions = Array.from(qMap.values());
+    const students = [];
+    state.ntTests.forEach(t=>{
+      const indexByKey = {};
+      (t.questions||[]).forEach((q,i)=>{ indexByKey[questionKey(q.label)] = i; });
+      (t.students||[]).forEach(r=>{
+        const scores = questions.map(q=>{
+          const original = r.scores?.[indexByKey[questionKey(q.label)]];
+          return original ? {...original} : {label:q.label, max:q.max, score:null, topic:q.topic||'General', questionType:q.questionType||'', skill:q.skill||'', knowledgeArea:q.knowledgeArea||'', level:q.level||'', notes:q.notes||'', part:q.part||''};
+        });
+        students.push({...r, scores, sourceTestId:t.id, sourceTestTitle:t.title, sourceClass:t.className || ''});
+      });
+    });
+    return {
+      id:'all',
+      isAggregate:true,
+      title:'All National Tests / All Classes',
+      subject:'National Test',
+      className:'All',
+      questions,
+      students,
+      maxTotal: questions.reduce((a,q)=>a+Number(q.max||0),0)
+    };
+  }
   function getFilteredRows(test){
     if(!test) return [];
     const sec=document.getElementById('sectionFilter')?.value || 'all';
@@ -89,15 +126,38 @@
       if(max===null) continue;
       questions.push({col:c, label, max, topic:'General', questionType:'', skill:'', knowledgeArea:'', level:'', notes:'', part:''});
     }
-    const findCol = (...names) => lowHeaders.findIndex(h => names.some(n => h === n || h.includes(n)));
+    // Summary columns can have different names in your spreadsheets.
+    // Example from your 9B file: Total, Grade, Teacher Grade, Deviations, Reason, Final Grade, Deviations, Motivation.
+    // Older app versions only looked for "NT Grade", so a plain "Grade" column was missed.
+    const findColExact = (...names) => lowHeaders.findIndex(h => names.some(n => h === n));
+    const findColIncludes = (...names) => lowHeaders.findIndex(h => names.some(n => h.includes(n)));
+    const totalCol = findColIncludes('total','summa','poäng totalt','poang totalt');
+    const teacherCol = findColIncludes('teacher grade','teacher','year grade','årsbetyg','arsbetyg');
+    const finalCol = findColIncludes('final grade','final','slutbetyg');
+    // NT grade is normally the first grade-like column after Total and before Teacher Grade.
+    let ntCol = -1;
+    for(let i=(totalCol>=0?totalCol+1:nameIndex+1); i<lowHeaders.length; i++){
+      const h=lowHeaders[i];
+      if(!h) continue;
+      if(i===teacherCol || i===finalCol) continue;
+      if(h==='grade' || h==='nt grade' || h==='national test grade' || h==='nationaltest grade' || h==='np grade' || h==='provbetyg' || h==='betyg'){ ntCol=i; break; }
+      if(teacherCol>=0 && i>=teacherCol) break;
+    }
+    if(ntCol<0) ntCol=findColIncludes('nt grade','national test grade','np grade','provbetyg');
+    const reasonCol = findColIncludes('reason','orsak');
+    const motivationCol = findColIncludes('motivation','motivering');
     const cols = {
-      total: findCol('total'), ntGrade: findCol('nt grade'), teacherGrade: findCol('teacher grade'), finalGrade: findCol('final grade'),
-      deviation1: findCol('deviations'), reason: findCol('reason'), motivation: findCol('motivation')
+      total: totalCol,
+      ntGrade: ntCol,
+      teacherGrade: teacherCol,
+      finalGrade: finalCol,
+      reason: reasonCol,
+      motivation: motivationCol
     };
     // If two Deviations columns exist, use first after NT/teacher and second after final when possible.
-    const deviationCols = lowHeaders.map((h,i)=>h.includes('deviation')?i:-1).filter(i=>i>=0);
-    cols.ntTeacherDeviation = deviationCols[0] ?? cols.deviation1;
-    cols.finalDeviation = deviationCols[1] ?? cols.deviation1;
+    const deviationCols = lowHeaders.map((h,i)=>(h.includes('deviation') || h.includes('avvik'))?i:-1).filter(i=>i>=0);
+    cols.ntTeacherDeviation = deviationCols[0] ?? -1;
+    cols.finalDeviation = deviationCols[1] ?? deviationCols[0] ?? -1;
 
     const students=[];
     for(let r=2; r<rows.length; r++){
@@ -129,9 +189,16 @@
       const className=norm(document.getElementById('ntClass').value) || inferClassFromFile(f.name);
       const test={id:id('nt'), title, subject, className, importedAt:new Date().toISOString(), ...parsed};
       test.students.forEach(r=>upsertStudent(r.name, r.gender || '', className));
-      state.ntTests.push(test); activeTestId=test.id; state.settings.activeTestId=activeTestId; saveState(); render();
+      state.ntTests.push(test);
+      activeTestId=test.id;
+      state.settings.activeTestId=activeTestId;
+      // Auto-apply the built-in Kemi 2026 question mapping so topics and question types are not left as General/Unspecified.
+      let autoMapped = 0;
+      try { autoMapped = applyQuestionMappingRows(parseCsv(defaultKemiMappingCsv())); } catch(_) { autoMapped = 0; }
+      saveState(); render();
       const genderCount = test.students.filter(s=>s.gender).length;
-      document.getElementById('ntImportStatus').textContent = `Imported ${test.students.length} students, ${test.questions.length} questions, max total ${test.maxTotal}. Gender imported for ${genderCount} students.`;
+      const ntGradeCount = test.students.filter(s=>s.ntGrade).length;
+      document.getElementById('ntImportStatus').textContent = `Imported ${test.students.length} students, ${test.questions.length} questions, max total ${test.maxTotal}. Gender imported for ${genderCount} students. NT grade imported for ${ntGradeCount} students. Question mapping auto-applied to ${autoMapped} questions.`;
     } catch(e){ alert(e.message); }
   }
   function inferClassFromFile(name){ const m=name.match(/\b(\d+[A-Z])\b/i); return m ? m[1].toUpperCase() : ''; }
@@ -311,8 +378,26 @@ B,34B,1,States of matter from melting/boiling diagram,Diagram interpretation,Use
 
   function render(){ renderStudents(); renderSelectors(); renderTopics(); renderDashboard(); renderStudentTable(); }
   function renderStudents(){ const div=$('#studentsTable'); if(!state.students.length){div.innerHTML='<p class="hint">No students yet.</p>'; return;} div.innerHTML='<table><thead><tr><th>Name</th><th>Gender</th><th>Class/Section</th><th></th></tr></thead><tbody>'+state.students.map(s=>`<tr><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.gender||'')}</td><td>${escapeHtml(s.section||'')}</td><td><button class="danger" data-del-student="${s.id}">Delete</button></td></tr>`).join('')+'</tbody></table>'; }
-  function renderSelectors(){ const sel=$('#testSelector'); sel.innerHTML = state.ntTests.length ? state.ntTests.map(t=>`<option value="${t.id}" ${t.id===activeTestId?'selected':''}>${escapeHtml(t.title)}</option>`).join('') : '<option value="">No test imported</option>'; const sections=[...new Set(state.students.map(s=>s.section).filter(Boolean).concat(state.ntTests.map(t=>t.className).filter(Boolean)))]; $('#sectionFilter').innerHTML='<option value="all">All</option>'+sections.map(s=>`<option>${escapeHtml(s)}</option>`).join(''); const genders=[...new Set(state.students.map(s=>s.gender||'Unspecified'))]; $('#genderFilter').innerHTML='<option value="all">All</option>'+genders.map(g=>`<option>${escapeHtml(g)}</option>`).join(''); }
-  function renderTopics(){ const test=selectedTest(); const div=$('#topicEditor'); if(!test){div.innerHTML='<p class="hint">Import a National Test first.</p>'; return;} div.innerHTML='<table><thead><tr><th>Part</th><th>Question</th><th>Max</th><th>Topic</th><th>Question Type</th><th>Skill / Ability</th><th>Knowledge Area</th><th>Level</th><th>Notes</th></tr></thead><tbody>'+test.questions.map((q,i)=>`<tr><td>${escapeHtml(q.part||'')}</td><td>${escapeHtml(q.label)}</td><td>${q.max}</td><td><input class="topic-input" data-topic-index="${i}" value="${escapeHtml(q.topic||'General')}"></td><td>${escapeHtml(q.questionType||'')}</td><td>${escapeHtml(q.skill||'')}</td><td>${escapeHtml(q.knowledgeArea||'')}</td><td>${escapeHtml(q.level||'')}</td><td>${escapeHtml(q.notes||'')}</td></tr>`).join('')+'</tbody></table>'; }
+  function renderSelectors(){
+    const sel=$('#testSelector');
+    if(state.ntTests.length){
+      const allSelected = activeTestId === 'all';
+      sel.innerHTML = `<option value="all" ${allSelected?'selected':''}>All National Tests / All Classes</option>` + state.ntTests.map(t=>`<option value="${t.id}" ${t.id===activeTestId?'selected':''}>${escapeHtml(t.title)}</option>`).join('');
+    } else {
+      sel.innerHTML = '<option value="">No test imported</option>';
+    }
+    const sections=[...new Set(state.students.map(s=>s.section).filter(Boolean).concat(state.ntTests.map(t=>t.className).filter(Boolean)))];
+    $('#sectionFilter').innerHTML='<option value="all">All</option>'+sections.map(s=>`<option>${escapeHtml(s)}</option>`).join('');
+    const genders=[...new Set(state.students.map(s=>s.gender||'Unspecified'))];
+    $('#genderFilter').innerHTML='<option value="all">All</option>'+genders.map(g=>`<option>${escapeHtml(g)}</option>`).join('');
+  }
+  function renderTopics(){
+    const test=selectedTest(); const div=$('#topicEditor');
+    if(!test){div.innerHTML='<p class="hint">Import a National Test first.</p>'; return;}
+    const editable = !test.isAggregate;
+    const note = test.isAggregate ? '<p class="hint">You are viewing all classes together. To edit topics, choose one specific National Test, or upload the question mapping file.</p>' : '';
+    div.innerHTML = note + '<table><thead><tr><th>Part</th><th>Question</th><th>Max</th><th>Topic</th><th>Question Type</th><th>Skill / Ability</th><th>Knowledge Area</th><th>Level</th><th>Notes</th></tr></thead><tbody>'+test.questions.map((q,i)=>`<tr><td>${escapeHtml(q.part||'')}</td><td>${escapeHtml(q.label)}</td><td>${q.max}</td><td>${editable?`<input class="topic-input" data-topic-index="${i}" value="${escapeHtml(q.topic||'General')}">`:escapeHtml(q.topic||'General')}</td><td>${escapeHtml(q.questionType||'')}</td><td>${escapeHtml(q.skill||'')}</td><td>${escapeHtml(q.knowledgeArea||'')}</td><td>${escapeHtml(q.level||'')}</td><td>${escapeHtml(q.notes||'')}</td></tr>`).join('')+'</tbody></table>';
+  }
   function renderDashboard(){
     const test=selectedTest();
     const rows=analysisRows(test);
