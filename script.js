@@ -25,15 +25,22 @@
   function csvEscape(v){ const s = (v ?? '').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
   function downloadFile(name, text, type='text/plain'){ const blob = new Blob([text], {type}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
 
+  function detectDelimiter(text){
+    const sample = text.split(/\r?\n/).slice(0,5).join('\n');
+    const candidates=[',',';','\t'];
+    return candidates.map(d=>({d, n:(sample.match(new RegExp(d==='\t'?'\t':d,'g'))||[]).length})).sort((a,b)=>b.n-a.n)[0].d || ',';
+  }
   function parseCsv(text){
+    text = (text || '').replace(/^\uFEFF/, '');
+    const delimiter = detectDelimiter(text);
     const rows=[]; let row=[], cur='', q=false;
     for(let i=0;i<text.length;i++){
       const ch=text[i], next=text[i+1];
       if(q){ if(ch==='"' && next==='"'){cur+='"'; i++;} else if(ch==='"'){q=false;} else cur+=ch; }
-      else { if(ch==='"') q=true; else if(ch===','){row.push(cur); cur='';} else if(ch==='\n'){row.push(cur); rows.push(row); row=[]; cur='';} else if(ch==='\r'){} else cur+=ch; }
+      else { if(ch==='"') q=true; else if(ch===delimiter){row.push(cur); cur='';} else if(ch==='\n'){row.push(cur); rows.push(row); row=[]; cur='';} else if(ch==='\r'){} else cur+=ch; }
     }
     if(cur || row.length) { row.push(cur); rows.push(row); }
-    return rows.map(r=>r.map(c=>norm(c)));
+    return rows.map(r=>r.map(c=>norm(c))).filter(r=>r.some(c=>norm(c)));
   }
   async function readRows(file){
     const name=file.name.toLowerCase();
@@ -48,7 +55,7 @@
     const cleanedGender = cleanGender(gender);
     let s=state.students.find(x=>x.name.toLowerCase()===key);
     if(!s){ s={id:id('stu'), name, gender:cleanedGender, section:norm(section)}; state.students.push(s); }
-    else { if(cleanedGender && !s.gender) s.gender=cleanedGender; if(section && !s.section) s.section=norm(section); }
+    else { if(cleanedGender) s.gender=cleanedGender; if(section) s.section=norm(section); }
   }
   function getStudent(name){ return state.students.find(s=>s.name.toLowerCase()===norm(name).toLowerCase()); }
   function selectedTest(){ return state.ntTests.find(t=>t.id===activeTestId) || state.ntTests[0] || null; }
@@ -138,6 +145,66 @@
       q.part||'', q.label, q.max, q.topic||'', q.questionType||'', q.skill||'', q.knowledgeArea||'', q.level||'', q.notes||''
     ].map(csvEscape).join(','))).join('\n');
   }
+
+  function studentTemplateCsv(){
+    return 'Name,Gender,Class/Section\nExample Student,Female,9A\nExample Boy,Male,9A';
+  }
+  function ntTemplateCsv(){
+    return [
+      ',,1,1,2,2,1,,,,',
+      'Name,gender,1,2,3,4,5,Total,NT Grade,Teacher Grade,Final Grade,Reason,Motivation for the deviation',
+      'Example Student,Female,1,1,2,2,1,7,C,C,C,,',
+      'Example Boy,Male,0,1,1,1,0,3,F,E,E,Year evidence supports E,Good class work and practical work'
+    ].join('\n');
+  }
+  function yearAssessmentTemplateCsv(){
+    return 'Name,Assessment,Score,Max,Grade,Topic,Subject,Date\nExample Student,Unit test 1,18,25,C,Chemical reactions,Kemi,2026-05-31\nExample Boy,Lab report,12,20,E,Investigations,Kemi,2026-05-31';
+  }
+  function defaultKemiMappingCsv(){
+    return `Part,Question,Max Points,Topic,Question Type,Skill / Ability,Knowledge Area,E/C/A Level,Notes / What students needed to show
+A,1,1,States of matter and particle model,Matching / model interpretation,"Identify particle models for solid, liquid and gas",Matter and particle model,E,"Match solid, liquid and gas with the correct particle diagrams."
+A,2,1,"Matter, atoms and compounds",Multiple choice / particle model,Recognise a chemical compound from particle diagrams,"Atoms, molecules and compounds",E,Choose the particle model that represents a chemical compound.
+A,3,2,Chemical reactions,Multiple choice / select correct statements,Recognise what happens in a chemical reaction,Chemical reactions and energy,C,Select correct statements about atoms rearranging and energy/heat in chemical reactions.
+A,4,2,"Fuels, combustion and particle movement",Written explanation,Explain why temperature affects ignition using particle movement,Combustion and energy,C,"Explain why ethanol ignites more easily when warm, using particle movement, collision and ignition temperature."
+A,5,1,Vitamins and solubility,Written explanation,Connect solubility to risk in the human body,Chemistry in the human body,E,Explain why fat-soluble vitamins can build up in the body more than water-soluble vitamins.
+A,6,2,Periodic table and atomic structure,Multiple choice / select correct statements,"Use protons, electrons and electron shells to compare elements",Atoms and periodic table,C,"Choose correct statements about He, O, F, Ne and electron shells/valence electrons."
+A,7,1,"Biofuels, carbon dioxide and climate",Written reasoning,Explain carbon dioxide release and greenhouse effect,Environment and fuels,E,Explain why burning biofuel still releases carbon dioxide and can contribute to greenhouse effect.
+A,8,1,Fats and esters,Multiple choice,Identify the alcohol involved in ester formation from fatty acids,Organic chemistry,E,Choose glycerol as the alcohol that reacts with fatty acids to form fats.
+A,9,1,Raw materials and products,Matching,Match raw materials to products,Materials and resources,E,"Match oil, wood, limestone and iron ore to plastic, paper, cement and steel."
+A,10A,1,Separation methods,Written method,Describe filtration as a method to separate an insoluble solid from salt water,Mixtures and separation,E,State that sand can be separated from salt water by filtering.
+A,10B,1,Separation methods,Written method,Describe evaporation/crystallisation to recover salt from water,Mixtures and separation,E,State that salt can be separated by evaporation/boiling away water.
+A,11,2,Enzymes and digestion,Written explanation,Explain enzyme function in digestion,Chemistry in the human body,C,State that pepsin breaks down proteins in the stomach.
+A,12,1,Source evaluation and materials,Multiple choice / source evaluation,Choose a reliable source for material information,Sources and material knowledge,E,Choose the pottery shop website or a relevant source for information about the ceramic material.
+A,13,1,Source criticism and scientific claims,Multiple choice / claim evaluation,Check whether advertising claims are scientifically correct,Source evaluation and environmental chemistry,E,Evaluate a mobile phone advert claim about carbon and electromagnetic radiation.
+A,14A,2,Investigation method and reliability,Written evaluation,Explain one strength that makes a study reliable,Scientific investigations,C,Identify a strength such as repeated measurements or measuring before/after to support reliability.
+A,14B,2,Investigation method and validity,Written evaluation,Explain a weakness that makes results less reliable/valid,Scientific investigations,C,Identify a weakness such as another factor affecting results or lack of control variables.
+A,15,2,"Natural resources, clothing and environment",Written reasoning,Use environmental reasoning about reduced new clothing production,Sustainable development and materials,C,"Explain why fewer new clothes can reduce cotton use, transport, waste, water use or environmental impact."
+A,16,3,"Fertilisers, environment and resources",Written reasoning using information,Compare natural fertiliser and artificial fertiliser using table evidence,"Agriculture, environment and chemistry",A,Use table information to reason in several steps why natural fertiliser may be better for the environment than artificial fertiliser.
+A,17A,2,Nutrients: proteins,Written reasoning using table,Use food data to compare protein content and body function,Food chemistry and human body,C,Use the table to explain which food gives more protein and why protein is important for the body.
+A,17B,2,Nutrients: minerals/fat/iron/calcium,Written reasoning using table,Use food data to compare another nutrient and body function,Food chemistry and human body,C,"Choose another nutrient from the table, compare values and explain why that nutrient is needed in the body."
+B,18,1,Atomic model and subatomic particles,Matching / model interpretation,"Identify proton, neutron and electron in an atom model",Atoms and atomic structure,E,"Match particle A, B and C with proton, neutron and electron."
+B,19,1,Chemical reactions vs physical changes,Multiple choice,Recognise an example of a chemical reaction,Chemical reactions,E,"Choose an example such as magnesium burning instead of melting, dissolving or boiling."
+B,20,1,Chemical reactions and substances,Multiple choice / formula interpretation,Identify the missing substance in a reaction equation,Chemical reactions and equations,E,Use the reaction between iron oxide and another substance to identify the substance that forms water.
+B,21,1,Metals and oxygen,Multiple choice,Identify the metal property shown by rusting,Materials and corrosion,E,Choose the property connected to metal reacting with oxygen / rusting.
+B,22,1,Photosynthesis and carbon atoms,Multiple choice,Explain where carbon atoms in glucose come from,Photosynthesis and carbon cycle,E,Identify that carbon atoms come from carbon dioxide taken from the air.
+B,23A,1,Biogas and uses,Short answer,Give a valid use of biogas,Fuels and sustainable energy,E,"Give one example of what biogas can be used for, such as fuel, heating, electricity or transport."
+B,23B,2,Combustion products,Multiple choice / select correct substances,Identify substances formed during combustion,Combustion and fuels,C,Select carbon dioxide and water vapour as main products from burning biogas.
+B,24,2,Proteins and body functions,Multiple choice / select correct statements,Recognise functions and properties of proteins,Chemistry in the human body,C,"Select correct statements about proteins, such as building amino acids/being needed for cells or hormones."
+B,25,1,Absolute zero and particles,Written explanation,Explain absolute zero using particle movement,Particle model and temperature,E,Explain that at absolute zero particles have as little movement as possible / cannot be colder.
+B,26A,1,"Acids, bases and pH",Multiple choice,Interpret pH using acid/base indicator,Acids and bases,E,State that the solution is acidic and pH is lower than 7 when litmus turns red.
+B,26B,1,Neutralisation reaction,Written answer / formula interpretation,Identify water as a product in acid-base neutralisation,"Acids, bases and reactions",E,Identify substance A as water in HCl + NaOH → NaCl + water.
+B,27,2,Balancing chemical equations,Calculation / equation balancing,Balance a combustion equation,Chemical reactions and equations,C,Fill in correct coefficients to balance propane combustion.
+B,28,1,Hazard symbols,Multiple choice / symbol interpretation,Interpret a chemical hazard pictogram,Chemical safety,E,Identify the exclamation mark hazard symbol as harmful/irritant.
+B,29,1,Hypothesis and solubility,Multiple choice / hypothesis,Choose a testable hypothesis with scientific reasoning,Scientific investigations,E,Choose a hypothesis that is testable and connected to solubility or particle properties.
+B,30,3,Improving investigations: cleaning metal coating,Written evaluation,Evaluate a method and suggest improvements for reliability,Scientific investigations and materials,A,Use the described method to identify weaknesses and suggest improvements that make results more reliable.
+B,31,3,Planning investigations: powders and fire,Written planning,Plan a fair and systematic investigation,Scientific investigations and fire chemistry,A,"Plan how to test whether baking powder or sand works best, including variables, safety, method and comparison."
+B,32,2,Interpreting graphs: blood sugar,Written explanation from graph,Use a graph to compare starch and sugar effects on blood sugar,Food chemistry and diagrams,C,Explain why blood sugar changes differently after starch and sugar using the graph.
+B,33,3,Evaluating results: solubility,Written explanation using data,Identify factors that could explain different results,Solubility and scientific reliability,A,"Explain at least two possible factors, such as temperature, amount of water, stirring, measurement or method differences."
+B,34A,1,States of matter from melting/boiling diagram,Diagram interpretation,Use melting and boiling points to decide gas state at 100°C,Particle model and phase changes,E,Use the diagram to identify which substances are gases at 100°C.
+B,34B,1,States of matter from melting/boiling diagram,Diagram interpretation,Use melting and boiling points to decide liquid state at −100°C,Particle model and phase changes,E,Use the diagram to identify which substances are liquids at −100°C.
+`;
+  }
+
   function applyQuestionMappingRows(rows){
     const test=selectedTest();
     if(!test) throw new Error('Import the National Test first, then upload the question mapping file.');
@@ -190,16 +257,40 @@
 
   async function importStudents(){
     const f=document.getElementById('studentFile').files[0]; if(!f) return alert('Choose a student file first.');
-    try{ const rows=await readRows(f); let count=0; rows.forEach((r,i)=>{ if(i===0 && /name|student/i.test(norm(r[0]))) return; if(norm(r[0])){ upsertStudent(r[0], r[1], r[2]); count++; }}); saveState(); render(); alert(`Imported ${count} students.`);} catch(e){ alert(e.message); }
+    try{
+      const rows=await readRows(f);
+      if(!rows.length) throw new Error('The student file is empty.');
+      let start=0; const head=rows[0].map(x=>norm(x).toLowerCase());
+      const hasHeader=head.some(h=>['name','student','student name','elev','namn'].includes(h));
+      if(hasHeader) start=1;
+      const find=(names, fallback)=>{ for(const n of names){ const i=head.findIndex(h=>h===n || h.includes(n)); if(i>=0) return i; } return fallback; };
+      const nameIdx=hasHeader?find(['name','student name','student','elev','namn'],0):0;
+      const genderIdx=hasHeader?find(['gender','sex','kön','kon'],1):1;
+      const sectionIdx=hasHeader?find(['class','section','klass','group','grupp'],2):2;
+      let count=0;
+      rows.slice(start).forEach(r=>{ const name=norm(r[nameIdx]); if(name){ upsertStudent(name, r[genderIdx], r[sectionIdx]); count++; }});
+      saveState(); render(); document.getElementById('studentFile').value=''; alert(`Imported ${count} students.`);
+    } catch(e){ alert('Student import failed: '+e.message); }
   }
   async function importYear(){
     const f=document.getElementById('yearFile').files[0]; if(!f) return alert('Choose an assessment file first.');
     try{
-      const rows=await readRows(f); let count=0; const head=rows[0].map(x=>norm(x).toLowerCase());
-      const get=(r,n,def)=>{ const i=head.indexOf(n); return i>=0 ? r[i] : (r[def]||''); };
-      rows.forEach((r,i)=>{ if(i===0 && head.includes('name')) return; const name=norm(get(r,'name',0)); const score=toNumber(get(r,'score',2)); const max=toNumber(get(r,'max',3)); if(name && score!==null && max){ upsertStudent(name); state.assessments.push({id:id('ass'), name, title:norm(get(r,'assessment',1)), score, max, grade:cleanGrade(get(r,'grade',4)), topic:norm(get(r,'topic',5)), subject:norm(get(r,'subject',6)), date:norm(get(r,'date',7))}); count++; }});
-      saveState(); render(); document.getElementById('yearStatus').textContent=`Imported ${count} assessment rows.`;
-    } catch(e){ alert(e.message); }
+      const rows=await readRows(f); if(!rows.length) throw new Error('The assessment file is empty.');
+      const head=rows[0].map(x=>norm(x).toLowerCase());
+      const hasHeader=head.some(h=>['name','student','score','max','assessment'].includes(h));
+      const find=(names, fallback)=>{ for(const n of names){ const i=head.findIndex(h=>h===n || h.includes(n)); if(i>=0) return i; } return fallback; };
+      const idx={name:hasHeader?find(['name','student','elev','namn'],0):0, title:hasHeader?find(['assessment','assignment','test','title','prov'],1):1, score:hasHeader?find(['score','points','poäng','poang'],2):2, max:hasHeader?find(['max','max points','maxpoäng','maxpoang'],3):3, grade:hasHeader?find(['grade','betyg'],4):4, topic:hasHeader?find(['topic','område','omrade'],5):5, subject:hasHeader?find(['subject','ämne','amne'],6):6, date:hasHeader?find(['date','datum'],7):7};
+      let count=0;
+      rows.slice(hasHeader?1:0).forEach(r=>{
+        const name=norm(r[idx.name]); const score=toNumber(r[idx.score]); const max=toNumber(r[idx.max]);
+        if(name && score!==null && max!==null && max>0){
+          upsertStudent(name);
+          state.assessments.push({id:id('ass'), name, title:norm(r[idx.title])||'Assessment', score, max, grade:cleanGrade(r[idx.grade]), topic:norm(r[idx.topic]), subject:norm(r[idx.subject]), date:norm(r[idx.date])});
+          count++;
+        }
+      });
+      saveState(); render(); document.getElementById('yearFile').value=''; $('#yearStatus').textContent=`Imported ${count} assessment rows.`;
+    } catch(e){ alert('Assessment import failed: '+e.message); }
   }
   function addAssessment(){ const name=norm($('#manualAssessmentName').value), score=toNumber($('#manualAssessmentScore').value), max=toNumber($('#manualAssessmentMax').value); if(!name||score===null||!max) return alert('Name, score, and max are required.'); upsertStudent(name); state.assessments.push({id:id('ass'), name, title:norm($('#manualAssessmentTitle').value), score, max, grade:cleanGrade($('#manualAssessmentGrade').value), topic:norm($('#manualAssessmentTopic').value), subject:norm($('#manualAssessmentSubject').value), date:new Date().toISOString().slice(0,10)}); saveState(); render(); }
   function $(s){ return document.querySelector(s); }
@@ -284,7 +375,12 @@
 
   function attach(){
     $('#addStudentBtn').addEventListener('click',()=>{ upsertStudent($('#studentName').value,$('#studentGender').value,$('#studentSection').value); $('#studentName').value=''; $('#studentGender').value=''; $('#studentSection').value=''; saveState(); render(); });
-    $('#importStudentsBtn').addEventListener('click',importStudents); $('#importNtBtn').addEventListener('click',importNationalTest); $('#importYearBtn').addEventListener('click',importYear); $('#addAssessmentBtn').addEventListener('click',addAssessment); $('#importQuestionMapBtn').addEventListener('click',importQuestionMap); $('#downloadMappingTemplateBtn').addEventListener('click',()=>downloadFile('question-topic-type-mapping-template.csv', mappingTemplateCsv(), 'text/csv'));
+    $('#importStudentsBtn').addEventListener('click',importStudents); $('#importNtBtn').addEventListener('click',importNationalTest); $('#importYearBtn').addEventListener('click',importYear); $('#addAssessmentBtn').addEventListener('click',addAssessment); $('#importQuestionMapBtn').addEventListener('click',importQuestionMap);
+    $('#downloadStudentTemplateBtn')?.addEventListener('click',()=>downloadFile('student-list-template.csv', studentTemplateCsv(), 'text/csv'));
+    $('#downloadNtTemplateBtn')?.addEventListener('click',()=>downloadFile('national-test-template.csv', ntTemplateCsv(), 'text/csv'));
+    $('#downloadYearTemplateBtn')?.addEventListener('click',()=>downloadFile('year-assessment-template.csv', yearAssessmentTemplateCsv(), 'text/csv'));
+    $('#downloadMappingTemplateBtn')?.addEventListener('click',()=>downloadFile('question-topic-type-mapping-template.csv', mappingTemplateCsv(), 'text/csv'));
+    $('#downloadKemiMappingBtn')?.addEventListener('click',()=>downloadFile('kemi-2026-question-topic-type-mapping.csv', defaultKemiMappingCsv(), 'text/csv'));
     $('#testSelector').addEventListener('change',e=>{activeTestId=e.target.value; state.settings.activeTestId=activeTestId; saveState(); render();}); $('#sectionFilter').addEventListener('change',renderDashboard); $('#genderFilter').addEventListener('change',renderDashboard);
     document.body.addEventListener('click',e=>{ const sid=e.target.dataset.delStudent; if(sid && confirm('Delete this student?')){ state.students=state.students.filter(s=>s.id!==sid); saveState(); render(); }});
     document.body.addEventListener('change',e=>{ if(e.target.dataset.topicIndex){ const test=selectedTest(); if(test){ test.questions[+e.target.dataset.topicIndex].topic=norm(e.target.value)||'General'; test.students.forEach(r=>{ if(r.scores[+e.target.dataset.topicIndex]) r.scores[+e.target.dataset.topicIndex].topic=test.questions[+e.target.dataset.topicIndex].topic; }); saveState(); renderDashboard(); renderStudentTable(); }} });

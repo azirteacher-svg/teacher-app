@@ -32,6 +32,7 @@
       <div class="import-row">
         <label class="file-label">Upload student list<input id="studentFile" type="file" accept=".csv,.xlsx,.xls" /></label>
         <button id="importStudentsBtn" class="secondary">Import Students</button>
+        <button id="downloadStudentTemplateBtn" class="secondary">Download Student Template</button>
       </div>
       <div id="studentsTable" class="table-wrap"></div>
     </section>
@@ -47,6 +48,7 @@
       <div class="import-row">
         <label class="file-label">Upload NT CSV/Excel<input id="ntFile" type="file" accept=".csv,.xlsx,.xls" /></label>
         <button id="importNtBtn">Import National Test</button>
+        <button id="downloadNtTemplateBtn" class="secondary">Download NT Template</button>
       </div>
       <div id="ntImportStatus" class="status"></div>
     </section>
@@ -57,6 +59,7 @@
       <div class="import-row">
         <label class="file-label">Upload assessment CSV/Excel<input id="yearFile" type="file" accept=".csv,.xlsx,.xls" /></label>
         <button id="importYearBtn" class="secondary">Import Year Assessments</button>
+        <button id="downloadYearTemplateBtn" class="secondary">Download Assessment Template</button>
       </div>
       <details>
         <summary>Add one class assessment manually</summary>
@@ -81,6 +84,7 @@
         <label class="file-label">Upload question mapping CSV/Excel<input id="questionMapFile" type="file" accept=".csv,.xlsx,.xls" /></label>
         <button id="importQuestionMapBtn" class="secondary">Import Question Mapping</button>
         <button id="downloadMappingTemplateBtn" class="secondary">Download Mapping Template</button>
+        <button id="downloadKemiMappingBtn" class="secondary">Download Filled Kemi 2026 Mapping</button>
       </div>
       <div id="questionMapStatus" class="status"></div>
       <div id="topicEditor" class="table-wrap"></div>
@@ -124,6 +128,6 @@
 
   <footer><p>Teacher Grade Analysis App • Data is saved in this browser only. Use Export Backup before changing computer or clearing browser data.</p></footer>
   <script src="https://unpkg.com/read-excel-file@5.1.0/bundle/read-excel-file.min.js"></script>
-  <script src="script.js?v=20260531-nt4"></script>
+  <script src="script.js?v=20260601-fix-imports-templates"></script>
 </body>
 </html>
