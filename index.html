@@ -75,8 +75,14 @@
     </section>
 
     <section class="card">
-      <h2>4. Question Topics</h2>
-      <p class="hint">After importing an NT file, assign topics to questions. This helps the app find the weakest topic for the class and for each student.</p>
+      <h2>4. Question Topics, Question Type and Skills</h2>
+      <p class="hint">After importing an NT file, upload the question mapping CSV. Format: <strong>Part, Question, Max Points, Topic, Question Type, Skill / Ability, Knowledge Area, E/C/A Level, Notes / What students needed to show</strong>.</p>
+      <div class="import-row">
+        <label class="file-label">Upload question mapping CSV/Excel<input id="questionMapFile" type="file" accept=".csv,.xlsx,.xls" /></label>
+        <button id="importQuestionMapBtn" class="secondary">Import Question Mapping</button>
+        <button id="downloadMappingTemplateBtn" class="secondary">Download Mapping Template</button>
+      </div>
+      <div id="questionMapStatus" class="status"></div>
       <div id="topicEditor" class="table-wrap"></div>
     </section>
 
@@ -89,12 +95,22 @@
         <div class="chart-card"><h3>Weakest Questions</h3><div id="questionChart"></div></div>
         <div class="chart-card"><h3>Weakest Topics</h3><div id="topicChart"></div></div>
         <div class="chart-card"><h3>National Test vs Final Grade</h3><div id="deviationChart"></div></div>
+        <div class="chart-card"><h3>Weakest Question Types</h3><div id="questionTypeChart"></div></div>
+        <div class="chart-card"><h3>Deviation Size</h3><div id="deviationSizeChart"></div></div>
+      </div>
+      <div class="report-grid">
+        <div class="report-card"><h3>Grade Movement Summary</h3><div id="movementSummary"></div></div>
+        <div class="report-card"><h3>Failing Risk Report</h3><div id="failingRiskReport"></div></div>
+        <div class="report-card"><h3>Deviation by Gender</h3><div id="genderDeviationReport"></div></div>
+        <div class="report-card"><h3>Deviation by Section</h3><div id="sectionDeviationReport"></div></div>
+        <div class="report-card full"><h3>Deviation Documentation Report</h3><div id="deviationDocumentationReport"></div></div>
+        <div class="report-card full"><h3>Teacher Planning Report</h3><div id="teacherPlanningReport"></div></div>
       </div>
     </section>
 
     <section class="card">
       <h2>6. Student Analysis Table</h2>
-      <div class="button-row"><button id="downloadStudentReportBtn" class="secondary">Download Student Report CSV</button><button id="downloadQuestionReportBtn" class="secondary">Download Question Report CSV</button></div>
+      <div class="button-row"><button id="downloadStudentReportBtn" class="secondary">Download Student Report CSV</button><button id="downloadQuestionReportBtn" class="secondary">Download Question Report CSV</button><button id="downloadDeviationReportBtn" class="secondary">Download Deviation Report CSV</button></div>
       <div id="studentAnalysisTable" class="table-wrap wide"></div>
     </section>
 
@@ -108,6 +124,6 @@
 
   <footer><p>Teacher Grade Analysis App • Data is saved in this browser only. Use Export Backup before changing computer or clearing browser data.</p></footer>
   <script src="https://unpkg.com/read-excel-file@5.1.0/bundle/read-excel-file.min.js"></script>
-  <script src="script.js?v=20260531-nt2"></script>
+  <script src="script.js?v=20260531-nt4"></script>
 </body>
 </html>
